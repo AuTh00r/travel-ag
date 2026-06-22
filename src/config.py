@@ -1,0 +1,43 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        case_sensitive=False,
+    )
+
+    # DeepSeek API
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
+
+    # Instagram (Meta Graph API)
+    instagram_app_secret: str = ""
+    instagram_access_token: str = ""
+    instagram_verify_token: str = ""
+    instagram_page_id: str = ""
+    instagram_ig_user_id: str = ""
+
+    # Google Sheets
+    google_sheets_credentials_file: str = "credentials.json"
+    google_tours_sheet_id: str = ""
+    google_requests_sheet_id: str = ""
+
+    # Telegram Bot (уведомления менеджерам)
+    telegram_bot_token: str = ""
+    telegram_manager_chat_id: str = ""
+
+    # ChromaDB (RAG FAQ)
+    chroma_db_dir: str = "data/chroma"
+
+    # Ссылка на форму бронирования / оплаты
+    booking_form_url: str = ""
+
+    # Настройки сервера
+    log_level: str = "INFO"
+    host: str = "0.0.0.0"
+    port: int = 8000
+
+
+settings = Settings()
