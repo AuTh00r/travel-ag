@@ -378,3 +378,86 @@ black --check       → All done
 2. **Page Access Token** (EAA...) получен через Explorer — живёт ~2 часа. Для webhook нужен стабильный токен.
 3. **Webhook Instagram** не настроен — нет публичного URL. Настроить после деплоя на Timeweb Cloud.
 4. **Верификация разработчика Meta** не пройдена — при попытке развернуть продакшен понадобится.
+
+---
+
+## Что сделано (Сессия: 22.06.2026 — Деплой на Timeweb Cloud VPS + HTTPS)
+
+### Файлы
+
+| Файл | Описание |
+|---|---|
+| `src/channels/instagram.py` | Добавлен `verify_signature()` — X-Hub-Signature-256 верификация входящих webhook |
+| `src/main.py` | POST /webhook/instagram: читает raw body, верифицирует подпись до парсинга JSON |
+| `tests/test_instagram.py` | +4 теста на подпись (правильная, неправильная, пустой secret, missing header) |
+| `docs/SETUP.md` | Переписан — актуальная инструкция деплоя (без Docker) |
+| `.env.example` | Добавлены `DUCKDNS_TOKEN`, `DUCKDNS_DOMAIN` |
+
+### Результаты деплоя
+
+| Компонент | Детали |
+|---|---|
+| **VPS** | Timeweb Cloud, Ubuntu 24.04, 2GB RAM, 2 vCPU, IP: `201.51.3.72` |
+| **Домен** | `travelagenttest.duckdns.org` → Let's Encrypt (сертификат до 2026-09-20) |
+| **HTTPS** | Nginx reverse proxy (443 → uvicorn :8000), HTTP→301→HTTPS |
+| **Webhook URL** | `https://travelagenttest.duckdns.org/webhook/instagram` |
+| **Система** | Python напрямую (без Docker) через systemd, авторестарт |
+| **Брандмауэр** | UFW: 22, 80, 443 |
+| **DuckDNS** | cron каждые 5 мин: автообновление A-записи |
+| **Git** | `https://github.com/AuTh00r/travel-ag.git` (origin) |
+
+### Детали реализации
+
+- **Отказ от Docker** — на VPS не было pull-лимитов, но решили ставить Python напрямую (меньше оверхеда)
+- **Отказ от ngrok/localhost.run/serveo** — нестабильные URL. DuckDNS + Let's Encrypt — постоянный HTTPS
+- **`sentence-transformers` удалён** — chromadb использует встроенный ONNX вместо PyTorch (экономия ~1GB на VPS)
+- **Instagram webhook** — протестирован вручную (POST с корректной X-Hub-Signature-256 → `{"status":"ok"}` → AI-обработка)
+- **DeepSeek API: 402 Payment Required** — баланс на платформе закончился, бот отвечает заглушкой "техническая ошибка"
+- **Instagram токен невалидный** — `Cannot parse access token` при отправке в Graph API
+
+### Проверено
+
+```
+pytest tests/ -v    → 87 passed
+ruff check src/     → All checks passed
+```
+
+### Текущий статус (22.06.2026)
+
+| Компонент | Статус | Примечание |
+|---|---|---|
+| FastAPI сервер | ✅ | systemd active, отвечает на HTTPS |
+| LangGraph AI | ✅ | Граф строится, классификация работает |
+| DeepSeek API | ❌ 402 | Нужно пополнить баланс |
+| Google Sheets | ✅ | Чтение/запись работают |
+| ChromaDB RAG | ✅ | FAQ загружен (43 записи), поиск работает |
+| SQLite сессии | ✅ | get/save session, статусы заявок |
+| Telegram уведомления | ✅ | Бот создан, токен валидный |
+| Instagram webhook | ✅ | Верифицирован Meta, подпись проверяется |
+| Instagram send | ❌ | Токен невалидный (нужен long-lived) |
+| DuckDNS + SSL | ✅ | Работает, auto-renew настроен |
+
+### Команды поддержки для VPS
+
+```bash
+# SSH
+ssh -i ~/.ssh/id_ed25519_travelbot root@201.51.3.72
+
+# Логи бота
+journalctl -u travel-bot -f
+
+# Статус сертификата
+certbot certificates
+
+# Рестарт
+systemctl restart travel-bot
+
+# DuckDNS обновление вручную
+/opt/travel-agent-bot/duckdns.sh
+
+# Проверка тестов (из /opt/travel-agent-bot)
+cd /opt/travel-agent-bot && source .venv/bin/activate && pytest tests/ -v
+
+# Дебаг Nginx
+nginx -t && systemctl reload nginx
+```

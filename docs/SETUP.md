@@ -3,14 +3,15 @@
 ## Требования
 
 - Python 3.11+
-- Docker + Docker Compose (опционально)
+- SSH-доступ к VPS (Ubuntu 24.04 LTS)
 - Доступ к API: DeepSeek, Meta Graph API (Instagram), Google Sheets, Telegram Bot
+- Git
 
 ## Локальная разработка
 
 ```bash
 # 1. Клонировать
-git clone <repo>
+git clone https://github.com/AuTh00r/travel-ag.git
 cd travel-agent-bot
 
 # 2. Создать виртуальное окружение
@@ -35,69 +36,141 @@ uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 # 7. Проверить health
 curl http://localhost:8000/health
 # → {"status": "ok"}
+
+# 8. Тесты
+pytest tests/ -v
+ruff check src/
 ```
 
-## Docker
+## Деплой на Timeweb Cloud VPS
+
+### 1. Создать VPS
+
+- Timeweb Cloud → VPS → Ubuntu 24.04, минимум 1GB RAM, 1 vCPU
+- После создания записать IP-адрес (например, `201.51.3.72`)
+- Сгенерировать SSH-ключ для доступа:
 
 ```bash
-# Сборка и запуск
-docker compose up --build -d
-
-# Проверка логов
-docker compose logs -f
-
-# Остановка
-docker compose down
+ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_travelbot -N ""
+ssh-copy-id -i ~/.ssh/id_ed25519_travelbot root@<IP-адрес-VPS>
+# Или добавить публичный ключ в панели Timeweb Cloud
 ```
 
-## Деплой на Timeweb Cloud
-
-### 1. Подготовка VPS
+### 2. Подготовить сервер
 
 ```bash
-# Подключиться по SSH
-ssh root@<IP-адрес-VPS>
+ssh -i ~/.ssh/id_ed25519_travelbot root@<IP-адрес-VPS>
 
-# Установить Docker
-apt update && apt install -y docker.io docker-compose-plugin
+# Обновление
+apt update && apt upgrade -y
 
-# Установить Git
-apt install -y git
+# Python 3.11
+apt install -y python3.11 python3.11-venv python3.11-dev git nginx curl
+
+# Certbot (Let's Encrypt)
+apt install -y certbot python3-certbot-nginx
+
+# Брандмауэр
+ufw allow 22/tcp
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw --force enable
 ```
 
-### 2. Развернуть проект
+### 3. Развернуть проект
 
 ```bash
 # Клонировать
-git clone <repo> /opt/travel-agent-bot
+git clone https://github.com/AuTh00r/travel-ag.git /opt/travel-agent-bot
 cd /opt/travel-agent-bot
+
+# Виртуальное окружение
+python3.11 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+
+# Удалить sentence-transformers из требований если есть
+# chromadb использует встроенный ONNX, PyTorch не нужен
+pip uninstall -y sentence-transformers torch
 
 # Настроить .env
 cp .env.example .env
 nano .env  # вставить реальные ключи
 
-# Загрузить credentials.json
-nano credentials.json  # вставить содержимое
-
-# Запустить
-docker compose up --build -d
+# Загрузить credentials.json для Google Sheets
+nano credentials.json  # вставить содержимое JSON-ключа Service Account
 ```
 
-### 3. Настройка домена и SSL (Timeweb)
+### 4. Настроить systemd сервис
 
-1. В панели Timeweb Cloud привязать домен к VPS (DNS A-запись на IP VPS)
-2. Установить Nginx как reverse proxy:
+Создать `/etc/systemd/system/travel-bot.service`:
+
+```ini
+[Unit]
+Description=Travel Agent Bot
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/travel-agent-bot
+ExecStart=/opt/travel-agent-bot/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000
+Restart=always
+RestartSec=5
+Environment=PYTHONPATH=/opt/travel-agent-bot
+
+[Install]
+WantedBy=multi-user.target
+```
 
 ```bash
-apt install -y nginx certbot python3-certbot-nginx
+systemctl daemon-reload
+systemctl enable --now travel-bot
+systemctl status travel-bot  # проверить
 ```
 
-3. Создать конфиг Nginx `/etc/nginx/sites-available/travel-bot`:
+### 5. Настроить DuckDNS (бесплатный домен)
+
+1. Зайти на https://www.duckdns.org
+2. Войти через GitHub/Google/Twitter
+3. Создать домен (например, `travelagenttest.duckdns.org`)
+4. Добавить A-запись → IP вашего VPS
+5. Получить токен
+
+Создать скрипт обновления IP `/opt/travel-agent-bot/duckdns.sh`:
+
+```bash
+#!/bin/bash
+echo url="https://www.duckdns.org/update?domains=<DOMAIN>&token=<TOKEN>&ip=" | \
+  curl -s -k -o /dev/null -K -
+```
+
+```bash
+chmod +x /opt/travel-agent-bot/duckdns.sh
+
+# Добавить в cron (каждые 5 минут)
+(crontab -l 2>/dev/null; echo "*/5 * * * * /opt/travel-agent-bot/duckdns.sh >/dev/null 2>&1") | crontab -
+```
+
+### 6. Настроить Nginx + Let's Encrypt SSL
+
+Создать `/etc/nginx/sites-available/travel-bot`:
 
 ```nginx
 server {
     listen 80;
-    server_name travel.example.com;
+    server_name <ВАШ_ДОМЕН>.duckdns.org;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name <ВАШ_ДОМЕН>.duckdns.org;
+
+    ssl_certificate /etc/letsencrypt/live/<ВАШ_ДОМЕН>.duckdns.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/<ВАШ_ДОМЕН>.duckdns.org/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     location / {
         proxy_pass http://127.0.0.1:8000;
@@ -106,59 +179,88 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
     }
+
+    location /health {
+        access_log off;
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
 }
 ```
 
 ```bash
+# Включить сайт
 ln -s /etc/nginx/sites-available/travel-bot /etc/nginx/sites-enabled/
+rm -f /etc/nginx/sites-enabled/default
+
+# Получить SSL (certbot сам обновит конфиг nginx, если server_name совпадает)
+certbot --nginx -d <ВАШ_ДОМЕН>.duckdns.org
+
+# Если certbot не смог автоматически настроить — перезаписать конфиг вручную
+# (как указано выше) и перезагрузить nginx
 nginx -t && systemctl reload nginx
 
-# Получить SSL
-certbot --nginx -d travel.example.com
+# Проверить
+curl https://<ВАШ_ДОМЕН>.duckdns.org/health
+# → {"status": "ok"}
 ```
 
-### 4. Настройка Instagram Webhook
+### 7. Настройка Instagram Webhook
 
-После деплоя настроить Webhook в Meta Developer Console:
+Webhook URL (требует HTTPS — готов после шага 6):
 
-- **Callback URL:** `https://travel.example.com/webhook/instagram`
-- **Verify Token:** (значение `INSTAGRAM_VERIFY_TOKEN` из `.env`)
-- **Подписки:** `messages`
-
-Для локальной разработки использовать ngrok:
-
-```bash
-ngrok http 8000
-# → https://xxxx-xx-xx-xx-xx.ngrok-free.app → localhost:8000
+```
+Callback URL: https://<ВАШ_ДОМЕН>.duckdns.org/webhook/instagram
+Verify Token: <значение INSTAGRAM_VERIFY_TOKEN из .env>
 ```
 
-## Проверка работоспособности
+Настроить в **Meta Developer Console**:
 
-```bash
-# Health check
-curl https://travel.example.com/health
+1. Dashboard → Instagram → Webhooks
+2. Нажать **Subscribe** для `messages`
+3. Ввести Callback URL и Verify Token
+4. Meta отправит GET-запрос с `hub.challenge` — если verify_token совпадает, верификация пройдёт
 
-# Тесты
-pytest tests/ -v
-
-# Линтинг
-ruff check src/
-```
-
-## Переменные окружения (.env)
-
-См. `.env.example` — все обязательные поля с комментариями.
+**X-Hub-Signature-256:** Бот автоматически проверяет подпись каждого POST-запроса.
+Если `INSTAGRAM_APP_SECRET` пустой в `.env` — проверка пропускается (для тестов).
 
 ## Структура данных
 
 - **Google Sheets «Туры»** — база доступных туров (читается ботом)
 - **Google Sheets «Заявки»** — заявки клиентов (записываются ботом)
 - **SQLite `data/sessions.db`** — сессии диалогов (создаётся автоматически)
-- **ChromaDB `data/chroma/`** — векторная БД FAQ (создаётся при старте)
+- **ChromaDB `data/chroma/`** — векторная БД FAQ (создаётся при старте из `data/faq/*.txt`)
 
 ## Мониторинг
 
-- Логи: `docker compose logs -f`
-- Health: `GET /health`
-- Статусы заявок: `GET /api/requests/{client_id}`
-- Обновление статуса: `PATCH /api/requests/{client_id}/status`
+```bash
+# Логи бота
+journalctl -u travel-bot -f
+
+# Состояние бота
+systemctl status travel-bot
+
+# Health
+curl https://<ВАШ_ДОМЕН>.duckdns.org/health
+
+# Статусы заявок
+curl https://<ВАШ_ДОМЕН>.duckdns.org/api/requests/<client_id>
+
+# Обновление статуса
+curl -X PATCH https://<ВАШ_ДОМЕН>.duckdns.org/api/requests/<client_id>/status \
+  -H "Content-Type: application/json" \
+  -d '{"status": "В обработке"}'
+```
+
+## Обновление кода на VPS
+
+```bash
+ssh -i ~/.ssh/id_ed25519_travelbot root@<IP-адрес-VPS>
+
+cd /opt/travel-agent-bot
+git pull
+source .venv/bin/activate
+pip install -r requirements.txt
+systemctl restart travel-bot
+```
