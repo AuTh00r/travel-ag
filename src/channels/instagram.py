@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+
 import httpx
 from fastapi import Response
 from structlog import get_logger
@@ -13,6 +16,20 @@ class InstagramChannel(ChannelBase):
     """Канал Instagram Direct через Meta Graph API."""
 
     BASE_URL = "https://graph.facebook.com/v21.0"
+
+    def verify_signature(self, raw_body: bytes, signature_header: str | None) -> bool:
+        if not settings.instagram_app_secret:
+            return True
+        if not signature_header:
+            return False
+
+        expected = hmac.new(
+            settings.instagram_app_secret.encode(),
+            raw_body,
+            hashlib.sha256,
+        ).hexdigest()
+
+        return hmac.compare_digest(f"sha256={expected}", signature_header)
 
     async def verify_webhook(
         self,

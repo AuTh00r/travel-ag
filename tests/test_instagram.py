@@ -51,11 +51,45 @@ class TestWebhookVerification:
         assert response.status_code == 403
 
 
+class TestSignatureVerification:
+    def test_valid_signature_passes(self):
+        import hashlib, hmac
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_app_secret = "test_secret"
+        body = b'{"test":"data"}'
+        expected = "sha256=" + hmac.new(b"test_secret", body, hashlib.sha256).hexdigest()
+        ch = InstagramChannel()
+        assert ch.verify_signature(body, expected)
+
+    def test_missing_signature_fails(self):
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_app_secret = "test_secret"
+        ch = InstagramChannel()
+        assert not ch.verify_signature(b"{}", None)
+
+    def test_wrong_signature_fails(self):
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_app_secret = "test_secret"
+        ch = InstagramChannel()
+        assert not ch.verify_signature(b"{}", "sha256=deadbeef")
+
+    def test_no_secret_skips_check(self):
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_app_secret = ""
+        ch = InstagramChannel()
+        assert ch.verify_signature(b"{}", None)
+
+
 class TestWebhookReceive:
     """POST /webhook/instagram — приём сообщений."""
 
     def setup_method(self):
         settings.instagram_access_token = ""
+        settings.instagram_app_secret = ""  # отключаем проверку подписи для тестов
 
     def test_receive_valid_message(self):
         payload = {

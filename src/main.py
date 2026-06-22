@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from structlog import get_logger
@@ -126,6 +126,12 @@ async def process_with_ai(sender_id: str, text: str) -> None:
 
 @app.post("/webhook/instagram")
 async def receive_instagram_message(request: Request):
+    raw_body = await request.body()
+    sig = request.headers.get("X-Hub-Signature-256")
+    if not instagram.verify_signature(raw_body, sig):
+        logger.warning("instagram.webhook.invalid_signature")
+        return Response(status_code=403, content="Invalid signature")
+
     payload = await request.json()
     logger.info("instagram.webhook.received")
 
