@@ -7,6 +7,7 @@ from src.ai.nodes import (
     classify_node,
     escalate,
     greet,
+    handle_tour_selection,
     present_tours,
     search_tours_node,
 )
@@ -16,11 +17,11 @@ _BOOKING_STEPS = {"AWAIT_NAME", "AWAIT_PHONE", "AWAIT_EMAIL", "CONFIRM"}
 
 
 def route_from_start(state: DialogState) -> str:
-    if state.get("current_step") in _BOOKING_STEPS:
+    cs = state.get("current_step")
+    if cs in _BOOKING_STEPS:
         return "book"
-    # Если в сессии уже есть сообщения — приветствие уже было, идём
-    # сразу к классификации. Иначе на каждом сообщении бот заново
-    # здоровался, потому что greet ставит current_step="greeting".
+    if cs == "awaiting_selection":
+        return "handle_tour_selection"
     if state.get("messages"):
         return "classify"
     return "greeting"
@@ -34,8 +35,17 @@ def route_by_request_type(state: DialogState) -> str:
 def route_after_presentation(state: DialogState) -> str:
     if state.get("needs_escalation"):
         return "escalate"
-    if state.get("selected_tour"):
+    return "handle_tour_selection"
+
+
+def route_after_selection(state: DialogState) -> str:
+    cs = state.get("current_step")
+    if cs == "ASK_NAME" or state.get("selected_tour"):
         return "book"
+    if cs == "clarify":
+        return "clarify"
+    if state.get("needs_escalation"):
+        return "escalate"
     return "end"
 
 
@@ -53,6 +63,7 @@ def build_graph() -> StateGraph:
     graph.add_node("clarify", clarify)
     graph.add_node("search_tours", search_tours_node)
     graph.add_node("present_tours", present_tours)
+    graph.add_node("handle_tour_selection", handle_tour_selection)
     graph.add_node("book", book)
     graph.add_node("faq_search", faq_search)
     graph.add_node("escalate", escalate)
@@ -60,7 +71,12 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         START,
         route_from_start,
-        {"greeting": "greeting", "book": "book", "classify": "classify"},
+        {
+            "greeting": "greeting",
+            "book": "book",
+            "handle_tour_selection": "handle_tour_selection",
+            "classify": "classify",
+        },
     )
 
     graph.add_edge("greeting", "classify")
@@ -90,7 +106,13 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "present_tours",
         route_after_presentation,
-        {"book": "book", "escalate": "escalate", "end": END},
+        {"escalate": "escalate", "handle_tour_selection": "handle_tour_selection"},
+    )
+
+    graph.add_conditional_edges(
+        "handle_tour_selection",
+        route_after_selection,
+        {"book": "book", "clarify": "clarify", "escalate": "escalate", "end": END},
     )
 
     graph.add_conditional_edges(

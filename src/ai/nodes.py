@@ -1,7 +1,7 @@
 import json
 import re
 
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from structlog import get_logger
 
 from src.ai.classifier import classify
@@ -10,6 +10,8 @@ from src.ai.prompts import (
     EXTRACT_PROMPT,
     GREETING_PROMPT,
     PRESENT_TOURS_PROMPT,
+    SELECT_TOUR_PROMPT,
+    build_context,
 )
 from src.ai.states import DialogState
 from src.ai.tour_search import search_tours
@@ -17,6 +19,15 @@ from src.config import settings
 from src.db.sessions import save_booking_request
 from src.services.google_sheets import GoogleSheetsService
 from src.services.llm import get_llm, get_llm_json
+
+_EXTRACT_NAME_PROMPT = """Извлеки имя пользователя из сообщения.
+
+Сообщение: {message}
+
+Ответь JSON: {{"name": "только имя, без лишних слов"}}
+
+Если имя не удаётся определить, верни {{"name": null}}.
+"""
 from src.services.telegram_notify import TelegramNotifier
 
 logger = get_logger()
@@ -47,6 +58,7 @@ async def clarify(state: DialogState) -> dict:
         }
     last_message = last_human.content
     known = state.get("tour_params", {})
+    context = build_context(state["messages"])
 
     llm = get_llm_json()
     response = await llm.ainvoke(
@@ -55,6 +67,7 @@ async def clarify(state: DialogState) -> dict:
                 content=EXTRACT_PROMPT.format(
                     message=last_message,
                     known_params=json.dumps(known, ensure_ascii=False),
+                    context=context,
                 )
             )
         ]
@@ -78,7 +91,13 @@ async def clarify(state: DialogState) -> dict:
     if should_clarify:
         llm = get_llm()
         clarify_response = await llm.ainvoke(
-            [HumanMessage(content=CLARIFY_PROMPT.format(missing_param=missing[0]))]
+            [
+                HumanMessage(
+                    content=CLARIFY_PROMPT.format(
+                        missing_param=missing[0], context=context
+                    )
+                )
+            ]
         )
         clarify_messages = [AIMessage(content=clarify_response.content)]
 
@@ -92,6 +111,31 @@ async def clarify(state: DialogState) -> dict:
 
 async def search_tours_node(state: DialogState) -> dict:
     return await search_tours(state)
+
+
+def _format_tour_for_presentation(index: int, t: dict) -> str:
+    name = t.get("Название", "Тур")
+    dest = t.get("Направление", "")
+    price = t.get("Цена", "")
+    dates = t.get("Даты", "")
+    duration = t.get("Длительность", "")
+    link = t.get("Ссылка", "")
+    tour_type = t.get("Тип", "")
+    parts = [f"[Тур {index}]"]
+    parts.append(f"Название: {name}")
+    if dest:
+        parts.append(f"Направление: {dest}")
+    if tour_type:
+        parts.append(f"Тип: {tour_type}")
+    if dates:
+        parts.append(f"Даты: {dates}")
+    if price:
+        parts.append(f"Цена: {price}")
+    if duration:
+        parts.append(f"Длительность: {duration}")
+    if link:
+        parts.append(f"Ссылка: {link}")
+    return "\n".join(parts)
 
 
 async def present_tours(state: DialogState) -> dict:
@@ -110,18 +154,25 @@ async def present_tours(state: DialogState) -> dict:
             ],
         }
 
+    context = build_context(state["messages"])
+
     tours_text = "\n\n".join(
-        f"{i+1}. {t.get('Название', 'Тур')} — {t.get('Направление', '')} — {t.get('Цена', '')}"
-        for i, t in enumerate(tours)
+        _format_tour_for_presentation(i + 1, t) for i, t in enumerate(tours)
     )
 
     llm = get_llm()
     response = await llm.ainvoke(
-        [HumanMessage(content=PRESENT_TOURS_PROMPT.format(tours=tours_text))]
+        [
+            HumanMessage(
+                content=PRESENT_TOURS_PROMPT.format(
+                    tours=tours_text, context=context
+                )
+            )
+        ]
     )
 
     return {
-        "current_step": "presented",
+        "current_step": "awaiting_selection",
         "messages": [AIMessage(content=response.content)],
     }
 
@@ -173,8 +224,18 @@ async def book(state: DialogState) -> dict:
         }
 
     if step == "AWAIT_NAME":
-        name = last_message.strip()
-        if len(name) < 2:
+        try:
+            llm = get_llm_json()
+            name_response = await llm.ainvoke(
+                [HumanMessage(content=_EXTRACT_NAME_PROMPT.format(message=last_message))]
+            )
+            name_result = json.loads(name_response.content)
+            raw_name = name_result.get("name")
+            name = raw_name.strip() if isinstance(raw_name, str) else ""
+        except (json.JSONDecodeError, TypeError):
+            name = last_message.strip()
+
+        if not name or len(name) < 2:
             return {
                 "current_step": "AWAIT_NAME",
                 "messages": [
@@ -281,6 +342,70 @@ async def book(state: DialogState) -> dict:
             }
 
     return {}
+
+
+async def handle_tour_selection(state: DialogState) -> dict:
+    tours = state.get("found_tours", [])
+    last_message = state["messages"][-1].content if state["messages"] else ""
+
+    context = build_context(state["messages"])
+    tours_text = "\n\n".join(
+        _format_tour_for_presentation(i + 1, t) for i, t in enumerate(tours)
+    )
+    llm = get_llm_json()
+
+    try:
+        response = await llm.ainvoke(
+            [
+                HumanMessage(
+                    content=SELECT_TOUR_PROMPT.format(
+                        tours=tours_text, message=last_message, context=context
+                    )
+                )
+            ]
+        )
+        result = json.loads(response.content)
+    except (json.JSONDecodeError, TypeError):
+        result = {"action": "ask_again", "reply": "Не совсем понял вас 😊 Можете уточнить, какой тур интересует?"}
+
+    action = result.get("action", "ask_again")
+    reply = result.get("reply", "Не совсем понял вас 😊")
+
+    if action == "select":
+        idx = result.get("selected_tour_index")
+        if idx is not None and 1 <= idx <= len(tours):
+            selected_name = result.get("selected_tour_name") or tours[idx - 1].get("Название", f"Тур {idx}")
+            return {
+                "selected_tour": selected_name,
+                "current_step": "ASK_NAME",
+                "messages": [AIMessage(content=reply)],
+            }
+        return {
+            "current_step": "awaiting_selection",
+            "messages": [AIMessage(content=reply)],
+        }
+
+    if action == "retry":
+        return {
+            "current_step": "clarify",
+            "tour_params": {},
+            "found_tours": [],
+            "selected_tour": None,
+            "messages": [AIMessage(content=reply)],
+        }
+
+    if action == "escalate":
+        return {
+            "needs_escalation": True,
+            "escalation_reason": "Клиент отклонил все туры",
+            "current_step": "awaiting_selection",
+            "messages": [AIMessage(content=reply)],
+        }
+
+    return {
+        "current_step": "awaiting_selection",
+        "messages": [AIMessage(content=reply)],
+    }
 
 
 def _summarize_request(state: DialogState) -> str:

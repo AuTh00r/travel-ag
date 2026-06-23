@@ -1,6 +1,6 @@
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.ai.prompts import FAQ_PROMPT
+from src.ai.prompts import FAQ_PROMPT, build_context
 from src.ai.states import DialogState
 from src.db.faq_db import search_faq
 from src.services.llm import get_llm
@@ -8,6 +8,7 @@ from src.services.llm import get_llm
 
 async def faq_search(state: DialogState) -> dict:
     last_message = state["messages"][-1].content if state["messages"] else ""
+    context = build_context(state["messages"])
 
     relevant_entries = await search_faq(last_message)
 
@@ -21,7 +22,7 @@ async def faq_search(state: DialogState) -> dict:
         [
             HumanMessage(
                 content=FAQ_PROMPT.format(
-                    faq_context=faq_context, question=last_message
+                    faq_context=faq_context, question=last_message, context=context
                 )
             )
         ]

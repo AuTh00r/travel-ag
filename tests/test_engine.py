@@ -19,6 +19,8 @@ def _make_fake_llm():
                 return FakeLLMResponse(
                     '{"request_type": "tour_search", "needs_escalation": false, "escalation_reason": null}'
                 )
+            if "Извлеки имя" in text or "извлеки имя" in text:
+                return FakeLLMResponse('{"name": "Иван"}')
             if "Извлеки" in text or "извлеки" in text:
                 return FakeLLMResponse(
                     '{"destination": "Турция", "dates": "август", "budget": "2000", "travelers": 2, "tour_type": "пляж", "missing_params": []}'
@@ -269,14 +271,18 @@ async def test_book_await_name():
 
 
 @pytest.mark.asyncio
-async def test_book_await_name_empty():
+async def test_book_await_name_llm_returns_none():
     from src.ai.nodes import book
 
-    state = _make_booking_state(
-        current_step="AWAIT_NAME",
-        messages=[HumanMessage(content="A")],
-    )
-    result = await book(state)
+    with patch("src.ai.nodes.get_llm_json") as mock_fn:
+        mock_llm = AsyncMock()
+        mock_llm.ainvoke = AsyncMock(return_value=FakeLLMResponse('{"name": null}'))
+        mock_fn.return_value = mock_llm
+        state = _make_booking_state(
+            current_step="AWAIT_NAME",
+            messages=[HumanMessage(content="A")],
+        )
+        result = await book(state)
     assert result["current_step"] != "AWAIT_PHONE"
     assert "client_name" not in result or result["client_name"] is None
 
