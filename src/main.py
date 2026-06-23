@@ -130,7 +130,8 @@ async def process_with_ai(sender_id: str, text: str) -> None:
     result = await graph.ainvoke(session)
 
     ai_texts = []
-    for msg in result.get("messages", []):
+    for i, msg in enumerate(result.get("messages", [])):
+        logger.debug("process_with_ai.msg", index=i, type=type(msg).__name__, has_content=hasattr(msg, "content"), content_preview=(msg.content[:80] if hasattr(msg, "content") and msg.content else ""))
         if (
             hasattr(msg, "content")
             and msg.content
@@ -138,8 +139,11 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         ):
             ai_texts.append(msg.content)
 
+    logger.debug("process_with_ai.combine", count=len(ai_texts))
+
     if ai_texts:
         combined = "\n\n".join(ai_texts)
+        logger.debug("process_with_ai.send", combined_len=len(combined), combined_preview=combined[:120])
         try:
             await instagram.send_message(sender_id, combined)
         except Exception:
