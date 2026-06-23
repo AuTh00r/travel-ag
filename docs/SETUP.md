@@ -223,7 +223,55 @@ Verify Token: <значение INSTAGRAM_VERIFY_TOKEN из .env>
 4. Meta отправит GET-запрос с `hub.challenge` — если verify_token совпадает, верификация пройдёт
 
 **X-Hub-Signature-256:** Бот автоматически проверяет подпись каждого POST-запроса.
-Если `INSTAGRAM_APP_SECRET` пустой в `.env` — проверка пропускается (для тестов).
+Если `INSTAGRAM_APP_SECRET` пустой в `.env` — проверка пропускается (для тестов),
+в логах появится предупреждение `instagram.webhook.signature_skipped`.
+
+### 8. Instagram в Development Mode (приём сообщений до Live Mode)
+
+В **Development Mode** (по умолчанию для новых приложений Meta) Instagram присылает
+POST на webhook **только от пользователей, добавленных в App Roles**. Для реальных
+клиентов нужно перевести приложение в Live Mode (App Review / Business Verification —
+см. `docs/ERROR.md`). Но уже сейчас можно прогнать бота end-to-end с тестерами.
+
+**Что проверить (диагностика):**
+
+1. **Тип приложения** — developers.facebook.com → App Dashboard → Settings → Basic →
+   поле **App Type** (`Business` или `Consumer/None`). От этого зависит, нужна ли
+   Business Verification для перехода в Live Mode.
+2. **Тип Instagram-аккаунта** — Instagram → Settings → Account type and tools →
+   должен быть **Business** или **Creator** (Personal не работает с Messaging API).
+3. **Подписка webhook** — App Dashboard → Instagram (или Messenger) → Webhooks →
+   поле **`messages`** должно быть подписано на callback URL и иметь активный статус.
+
+**Добавление тестеров:**
+
+1. App Dashboard → **Roles → Instagram Testers** → **Add Instagram Tester**
+   (указать IG-username, лимит ~15 человек).
+2. Каждый тестер должен **принять приглашение** в своём Instagram
+   (Settings → Apps and websites) и **разрешить permissions**.
+3. IG-аккаунты тестеров должны быть **Business/Creator**.
+4. Тестер пишет в DM вашего аккаунта → проверьте в логах, что POST пришёл.
+
+**Проверка кнопкой Test (без реального пользователя):**
+- App Dashboard → Webhooks → рядом с полем `messages` кнопка **«Test»** →
+  отправит тестовый payload на ваш endpoint. Это проверит весь путь до AI-движка.
+
+**Быстрая проверка, достукивается ли Meta вообще:**
+
+```bash
+# Возвращает received_ever и время последнего POST от Meta (in-memory, без логов).
+# Если received_ever=false — POST никогда не приходил (приложение не Live
+# и пользователь не в App Roles). Сбрасывается при рестарте бота.
+curl https://<ВАШ_ДОМЕН>.duckdns.org/webhook/instagram/last_seen
+
+# Логи в реальном времени:
+journalctl -u travel-bot -f | grep instagram
+```
+
+> ⚠️ **Важно для прода:** `INSTAGRAM_APP_SECRET` обязан быть задан в `.env` на VPS.
+> Без него webhook принимает произвольные POST без проверки подлинности (см. лог
+> `instagram.webhook.signature_skipped`). App Secret берётся в App Dashboard →
+> Settings → Basic → **App Secret**.
 
 ## Структура данных
 

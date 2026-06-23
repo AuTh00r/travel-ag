@@ -53,12 +53,16 @@ class TestWebhookVerification:
 
 class TestSignatureVerification:
     def test_valid_signature_passes(self):
-        import hashlib, hmac
+        import hashlib
+        import hmac
+
         from src.channels.instagram import InstagramChannel
 
         settings.instagram_app_secret = "test_secret"
         body = b'{"test":"data"}'
-        expected = "sha256=" + hmac.new(b"test_secret", body, hashlib.sha256).hexdigest()
+        expected = (
+            "sha256=" + hmac.new(b"test_secret", body, hashlib.sha256).hexdigest()
+        )
         ch = InstagramChannel()
         assert ch.verify_signature(body, expected)
 
@@ -91,7 +95,9 @@ class TestWebhookReceive:
         settings.instagram_access_token = ""
         settings.instagram_app_secret = ""  # отключаем проверку подписи для тестов
 
-    def test_receive_valid_message(self):
+    @patch("src.main.process_with_ai")
+    def test_receive_valid_message(self, mock_process):
+        mock_process.return_value = None
         payload = {
             "entry": [
                 {
@@ -107,11 +113,21 @@ class TestWebhookReceive:
         response = client.post("/webhook/instagram", json=payload)
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+        mock_process.assert_awaited_once_with("12345", "Привет! Хочу тур в Турцию")
 
     def test_receive_empty_payload(self):
         response = client.post("/webhook/instagram", json={"entry": []})
         assert response.status_code == 200
         assert response.json() == {"status": "ok"}
+
+    def test_last_seen_updated_after_post(self):
+        # Любой валидный POST обновляет last_seen (in-memory, глобально).
+        client.post("/webhook/instagram", json={"entry": []})
+        response = client.get("/webhook/instagram/last_seen")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["received_ever"] is True
+        assert data["last_received_at"] is not None
 
     def test_receive_message_without_text(self):
         payload = {

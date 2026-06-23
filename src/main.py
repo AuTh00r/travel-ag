@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from langchain_core.messages import HumanMessage
@@ -17,6 +18,10 @@ from src.services.google_sheets import GoogleSheetsService
 logger = get_logger()
 
 instagram = InstagramChannel()
+
+# Время последнего POST-запроса от Meta на webhook (для быстрой диагностики
+# без чтения логов; in-memory, не персистентно между рестартами).
+_last_webhook_at: datetime | None = None
 
 
 @asynccontextmanager
@@ -101,6 +106,20 @@ async def verify_instagram_webhook(
     return await instagram.verify_webhook(hub_mode, hub_challenge, hub_verify_token)
 
 
+@app.get("/webhook/instagram/last_seen")
+async def webhook_last_seen():
+    """Быстрая диагностика: достукивается ли Meta до webhook.
+
+    Возвращает время последнего POST от Meta. Если `received_ever=False`,
+    значит POST вообще не приходил (часто = приложение не в Live Mode
+    и пользователь не в App Roles). in-memory, сбрасывается при рестарте.
+    """
+    return {
+        "received_ever": _last_webhook_at is not None,
+        "last_received_at": _last_webhook_at.isoformat() if _last_webhook_at else None,
+    }
+
+
 async def process_with_ai(sender_id: str, text: str) -> None:
     from src.ai.engine import build_graph
 
@@ -126,16 +145,21 @@ async def process_with_ai(sender_id: str, text: str) -> None:
 
 @app.post("/webhook/instagram")
 async def receive_instagram_message(request: Request):
+    global _last_webhook_at
+
     raw_body = await request.body()
+    # Фиксируем факт обращения ДО проверки подписи — так даже невалидные
+    # запросы отразятся в last_seen (полезно при диагностике Live/Dev mode).
+    _last_webhook_at = datetime.now(timezone.utc)
+
     sig = request.headers.get("X-Hub-Signature-256")
     if not instagram.verify_signature(raw_body, sig):
         logger.warning("instagram.webhook.invalid_signature")
         return Response(status_code=403, content="Invalid signature")
 
     payload = await request.json()
-    logger.info("instagram.webhook.received")
-
     messages = await instagram.receive_message(payload)
+    logger.info("instagram.webhook.received", messages=len(messages))
 
     for sender_id, text in messages:
         logger.info("instagram.message.processing", sender_id=sender_id)
