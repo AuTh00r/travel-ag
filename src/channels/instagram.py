@@ -60,11 +60,15 @@ class InstagramChannel(ChannelBase):
         """Разобрать входящий webhook-платеж от Instagram.
 
         Возвращает список (sender_id, text) для каждого сообщения.
+        Фильтрует echo-сообщения (собственные ответы бота) чтобы
+        избежать бесконечного цикла.
         """
         messages: list[tuple[str, str]] = []
 
         for entry in payload.get("entry", []):
             for messaging in entry.get("messaging", []):
+                if messaging.get("message", {}).get("is_echo"):
+                    continue
                 sender_id = messaging.get("sender", {}).get("id")
                 message = messaging.get("message", {})
                 text = message.get("text", "")
