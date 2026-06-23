@@ -15,16 +15,18 @@ def _make_fake_llm():
     class FakeLLM:
         async def ainvoke(self, messages):
             text = messages[0].content if isinstance(messages, list) else str(messages)
-            if "Ты — ИИ-туристический агент" in text:
+            if "классификатор" in text or "Классифицируй" in text:
                 return FakeLLMResponse(
-                    '{"action": "respond", "reply": "Здравствуйте! Чем могу помочь? 😊", "tour_params": {}, "selected_tour": null}'
+                    '{"request_type": "tour_search", "needs_escalation": false, "escalation_reason": null}'
                 )
             if "Извлеки имя" in text or "извлеки имя" in text:
                 return FakeLLMResponse('{"name": "Иван"}')
-            if "Представь клиенту найденные туры" in text:
+            if "Извлеки" in text or "извлеки" in text:
                 return FakeLLMResponse(
-                    "Вот что я нашёл для вас:\n\n1. Анталья All-Inclusive — Турция — 1200$\n\nНапишите номер, если заинтересовало!"
+                    '{"destination": "Турция", "dates": "август", "budget": "2000", "travelers": 2, "tour_type": "пляж", "missing_params": []}'
                 )
+            if "Уточни" in text:
+                return FakeLLMResponse("Какой месяц планируете? 📅")
             return FakeLLMResponse("👋 Здравствуйте! Чем могу помочь?")
 
     return FakeLLM()
@@ -36,6 +38,8 @@ def mock_all_services():
     patches = [
         patch("src.ai.nodes.get_llm", return_value=fake_llm),
         patch("src.ai.nodes.get_llm_json", return_value=fake_llm),
+        patch("src.ai.classifier.get_llm_json", return_value=fake_llm),
+        patch("src.ai.faq.get_llm", return_value=fake_llm),
     ]
     for p in patches:
         p.start()
@@ -67,8 +71,17 @@ def mock_all_services():
     telegram_patch.stop()
 
 
-def _make_session(**overrides):
-    base = {
+def test_graph_builds():
+    graph = build_graph()
+    assert graph is not None
+
+
+@pytest.mark.asyncio
+async def test_greeting_flow(mock_all_services):
+    """Первое сообщение (пустая сессия) → greeting → classify."""
+    graph = build_graph()
+
+    session = {
         "messages": [],
         "client_id": "test_123",
         "client_name": None,
@@ -81,26 +94,10 @@ def _make_session(**overrides):
         "faq_answer": None,
         "needs_escalation": False,
         "escalation_reason": None,
-        "current_step": "converse",
+        "current_step": "greeting",
         "awaiting_field": None,
         "conversation_history": [],
-        "next_action": None,
     }
-    base.update(overrides)
-    return base
-
-
-def test_graph_builds():
-    graph = build_graph()
-    assert graph is not None
-
-
-@pytest.mark.asyncio
-async def test_greeting_flow(mock_all_services):
-    """Первое сообщение → converse → respond (END)."""
-    graph = build_graph()
-
-    session = _make_session(messages=[HumanMessage(content="Привет")])
 
     result = await graph.ainvoke(session)
     assert result is not None
@@ -110,23 +107,93 @@ async def test_greeting_flow(mock_all_services):
 
 @pytest.mark.asyncio
 async def test_returning_user_skips_greeting(mock_all_services):
-    """Повторное сообщение → converse без лишних шагов."""
+    """Повторное сообщение (непустая сессия) → classify без greeting."""
     graph = build_graph()
 
-    session = _make_session(messages=[HumanMessage(content="Хочу тур в Турцию")])
+    session = {
+        "messages": [HumanMessage(content="Хочу тур в Турцию")],
+        "client_id": "test_123",
+        "client_name": None,
+        "client_phone": None,
+        "client_email": None,
+        "request_type": None,
+        "tour_params": {},
+        "found_tours": [],
+        "selected_tour": None,
+        "faq_answer": None,
+        "needs_escalation": False,
+        "escalation_reason": None,
+        "current_step": "greeting",
+        "awaiting_field": None,
+        "conversation_history": [],
+    }
 
     result = await graph.ainvoke(session)
     assert result is not None
-    assert len(result["messages"]) > 0
+    # При непустых messages greeting пропускается — classify идёт сразу.
+    # Найденные AIMessage'ы должны быть от classify/clarify, а не от greet.
+
+
+@pytest.mark.asyncio
+async def test_clarify_avoids_infinite_loop_at_8_messages(mock_all_services):
+    """При ≥8 сообщениях clarify не циклится, а уходит в search.
+
+    Если missing_params не пуст, но диалог уже длинный (>8 сообщений),
+    should_clarify=False → current_step='search' вместо 'clarify'.
+    """
+    from src.ai.nodes import clarify
+    from langchain_core.messages import AIMessage
+
+    history = [HumanMessage(content=f"msg_{i}") for i in range(8)]
+    state = {
+        "messages": history,
+        "client_id": "looptest",
+        "client_name": None,
+        "client_phone": None,
+        "client_email": None,
+        "request_type": "tour_search",
+        "tour_params": {"destination": "Турция"},
+        "found_tours": [],
+        "selected_tour": None,
+        "faq_answer": None,
+        "needs_escalation": False,
+        "escalation_reason": None,
+        "current_step": "clarify",
+        "awaiting_field": "dates",
+        "conversation_history": [],
+    }
+
+    result = await clarify(state)
+    # Даже если есть missing_params (>8 сообщений), переходим в search
+    assert result["current_step"] == "search", (
+        f"Expected 'search', got '{result['current_step']}' — "
+        "clarify would loop"
+    )
 
 
 @pytest.mark.asyncio
 async def test_state_schema():
     from src.ai.states import DialogState
 
-    state: DialogState = _make_session()
-    assert state["client_id"] == "test_123"
-    assert state["current_step"] == "converse"
+    state: DialogState = {
+        "messages": [],
+        "client_id": "test",
+        "client_name": None,
+        "client_phone": None,
+        "client_email": None,
+        "request_type": None,
+        "tour_params": {},
+        "found_tours": [],
+        "selected_tour": None,
+        "faq_answer": None,
+        "needs_escalation": False,
+        "escalation_reason": None,
+        "current_step": "greeting",
+        "awaiting_field": None,
+        "conversation_history": [],
+    }
+    assert state["client_id"] == "test"
+    assert state["current_step"] == "greeting"
 
 
 @pytest.mark.asyncio
@@ -150,53 +217,6 @@ async def test_validate_email():
     assert not validate_email("test@")
 
 
-# --- Converse node tests ---
-
-
-@pytest.mark.asyncio
-async def test_converse_responds_to_greeting(mock_all_services):
-    """Приветствие → action=respond → END."""
-    from src.ai.nodes import converse
-
-    state = _make_session(messages=[HumanMessage(content="Привет! Как дела?")])
-
-    result = await converse(state)
-    assert result["next_action"] == "respond"
-    assert "reply" not in result  # reply is in messages
-    assert len(result["messages"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_converse_handles_search_intent(mock_all_services):
-    """Запрос поиска тура → action=search."""
-    from src.ai.nodes import converse
-
-    mock_llm = AsyncMock()
-    mock_llm.ainvoke = AsyncMock(return_value=FakeLLMResponse(
-        '{"action": "search", "reply": "Ищу туры в Турцию! 🌴", "tour_params": {"destination": "Турция", "dates": "август"}, "selected_tour": null}'
-    ))
-
-    state = _make_session(messages=[HumanMessage(content="Хочу тур в Турцию на август")])
-
-    with patch("src.ai.nodes.get_llm_json", return_value=mock_llm):
-        result = await converse(state)
-    assert result["next_action"] == "search"
-    assert result.get("tour_params", {}).get("destination") == "Турция"
-
-
-@pytest.mark.asyncio
-async def test_converse_extracts_tour_params(mock_all_services):
-    """При search action извлекаются параметры тура."""
-    from src.ai.nodes import converse
-
-    state = _make_session(messages=[HumanMessage(content="Хочу тур в Турцию на август за 2000")])
-
-    result = await converse(state)
-    if result["next_action"] == "search":
-        params = result.get("tour_params", state.get("tour_params", {}))
-        assert isinstance(params, dict)
-
-
 # --- Booking flow tests ---
 
 
@@ -216,7 +236,6 @@ def _make_booking_state(**overrides):
         "escalation_reason": None,
         "awaiting_field": None,
         "conversation_history": [],
-        "next_action": None,
     }
     base.update(overrides)
     return base
@@ -432,13 +451,23 @@ async def test_book_full_flow():
 async def test_graph_routes_mid_booking_to_book():
     graph = build_graph()
 
-    session = _make_session(
-        messages=[HumanMessage(content="+375291234567")],
-        client_name="Иван",
-        client_phone=None,
-        client_email=None,
-        current_step="AWAIT_PHONE",
-    )
+    session = {
+        "messages": [HumanMessage(content="+375291234567")],
+        "client_id": "test_mid",
+        "client_name": "Иван",
+        "client_phone": None,
+        "client_email": None,
+        "request_type": None,
+        "tour_params": {},
+        "found_tours": [],
+        "selected_tour": None,
+        "faq_answer": None,
+        "needs_escalation": False,
+        "escalation_reason": None,
+        "current_step": "AWAIT_PHONE",
+        "awaiting_field": None,
+        "conversation_history": [],
+    }
 
     result = await graph.ainvoke(session)
     assert result.get("client_phone") == "+375291234567"

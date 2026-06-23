@@ -232,7 +232,9 @@ async def receive_instagram_message(request: Request):
                 for _ in range(excess):
                     _processed_mids.pop()
         else:
+            # Без mid не можем дедуплицировать — пропускаем.
             logger.warning("instagram.message.no_mid", sender_id=sender_id)
+            continue
         logger.info("instagram.message.processing", sender_id=sender_id)
         task = asyncio.create_task(_process_safely(sender_id, text))
         _background_tasks.add(task)
