@@ -210,8 +210,7 @@ def _build_filters(
         filters["tour_type"] = _normalize(tour_type)
 
     if budget:
-        budget_str = str(budget)
-        nums = re.findall(r"\d+", budget_str.replace(",", "").replace(" ", ""))
+        nums = re.findall(r"\d+", budget.replace(",", "").replace(" ", ""))
         budget_values = [int(n) for n in nums] if nums else None
         filters["budget_values"] = budget_values
         filters["budget_direction"] = _detect_budget_direction(budget)
@@ -224,7 +223,7 @@ def _build_filters(
 
 
 def _detect_budget_direction(budget_str: str) -> str:
-    budget_lower = str(budget_str).lower()
+    budget_lower = budget_str.lower()
     if any(w in budget_lower for w in ["до", "не больше", "макс"]):
         return "max"
     if any(w in budget_lower for w in ["от", "не меньше", "мин"]):

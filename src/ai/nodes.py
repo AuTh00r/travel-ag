@@ -70,10 +70,6 @@ async def converse(state: DialogState) -> dict:
         for k, v in new_params.items():
             if v is not None:
                 merged[k] = v
-        if "budget" in merged and not isinstance(merged["budget"], str):
-            merged["budget"] = str(merged["budget"])
-        if "travelers" in merged and not isinstance(merged["travelers"], int):
-            merged["travelers"] = int(merged["travelers"])
         if merged != tour_params:
             updates["tour_params"] = merged
 
