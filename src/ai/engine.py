@@ -1,4 +1,3 @@
-from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 
 from src.ai.faq import faq_search
@@ -19,8 +18,6 @@ _BOOKING_STEPS = {"AWAIT_NAME", "AWAIT_PHONE", "AWAIT_EMAIL", "CONFIRM"}
 def route_from_start(state: DialogState) -> str:
     if state.get("current_step") in _BOOKING_STEPS:
         return "book"
-    if any(isinstance(m, AIMessage) for m in state.get("messages", [])):
-        return "classify"
     return "greeting"
 
 
