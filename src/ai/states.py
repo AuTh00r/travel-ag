@@ -39,3 +39,4 @@ class DialogState(TypedDict):
     current_step: str
     awaiting_field: str | None
     conversation_history: list[dict]
+    next_action: str | None

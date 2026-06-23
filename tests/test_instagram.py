@@ -207,7 +207,7 @@ class TestInstagramChannelSend:
         settings.instagram_access_token = "test_token"
 
         mock_response = AsyncMock()
-        mock_response.raise_for_status = AsyncMock()
+        mock_response.raise_for_status = Mock()
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(
             return_value=mock_response
         )

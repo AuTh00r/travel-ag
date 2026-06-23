@@ -2,6 +2,7 @@ import json
 import sqlite3
 from pathlib import Path
 
+from langchain_core.messages import messages_from_dict, messages_to_dict
 from structlog import get_logger
 
 from src.ai.states import DialogState
@@ -51,7 +52,12 @@ async def get_session(client_id: str) -> DialogState:
     conn.close()
 
     if row:
-        return json.loads(row["state"])
+        raw = json.loads(row["state"])
+        try:
+            raw["messages"] = messages_from_dict(raw["messages"])
+        except Exception:
+            raw["messages"] = []
+        return raw
     return _new_session(client_id)
 
 
@@ -69,18 +75,21 @@ def _new_session(client_id: str) -> DialogState:
         "faq_answer": None,
         "needs_escalation": False,
         "escalation_reason": None,
-        "current_step": "greeting",
+        "current_step": "converse",
         "awaiting_field": None,
         "conversation_history": [],
+        "next_action": None,
     }
 
 
 async def save_session(client_id: str, state: DialogState) -> None:
     conn = _get_connection()
+    state_copy = dict(state)
+    state_copy["messages"] = messages_to_dict(state["messages"])
     conn.execute(
         """INSERT OR REPLACE INTO sessions (client_id, state, updated_at)
            VALUES (?, ?, CURRENT_TIMESTAMP)""",
-        (client_id, json.dumps(state, default=str)),
+        (client_id, json.dumps(state_copy, ensure_ascii=False)),
     )
     conn.commit()
     conn.close()
