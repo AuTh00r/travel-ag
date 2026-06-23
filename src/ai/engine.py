@@ -82,7 +82,7 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         "clarify",
         lambda s: "search" if s.get("current_step") == "search" else "ask",
-        {"search": "search_tours", "ask": "clarify"},
+        {"search": "search_tours", "ask": END},
     )
 
     graph.add_edge("search_tours", "present_tours")
