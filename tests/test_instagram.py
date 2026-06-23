@@ -104,7 +104,10 @@ class TestWebhookReceive:
                     "messaging": [
                         {
                             "sender": {"id": "12345"},
-                            "message": {"text": "Привет! Хочу тур в Турцию"},
+                            "message": {
+                                "text": "Привет! Хочу тур в Турцию",
+                                "mid": "mid_001",
+                            },
                         }
                     ]
                 }
@@ -120,6 +123,52 @@ class TestWebhookReceive:
         response = client.post("/webhook/instagram", json={"entry": []})
         assert response.status_code == 200
         assert response.text == ""
+
+    @patch("src.main._process_safely")
+    def test_dedup_skips_duplicate_mid(self, mock_process):
+        """Повторный webhook с тем же mid не должен запускать обработку."""
+        mock_process.return_value = None
+        payload = {
+            "entry": [
+                {
+                    "messaging": [
+                        {
+                            "sender": {"id": "12345"},
+                            "message": {"text": "Дубликат", "mid": "mid_dup_1"},
+                        }
+                    ]
+                }
+            ]
+        }
+        # Первый запрос — обрабатывается
+        response1 = client.post("/webhook/instagram", json=payload)
+        assert response1.status_code == 200
+        assert mock_process.await_count == 1
+
+        # Второй запрос с тем же mid — пропускается
+        response2 = client.post("/webhook/instagram", json=payload)
+        assert response2.status_code == 200
+        assert mock_process.await_count == 1  # не вырос
+
+    @patch("src.main._process_safely")
+    def test_no_mid_still_processed(self, mock_process):
+        """Сообщение без mid обрабатывается (нет возможности дедупить)."""
+        mock_process.return_value = None
+        payload = {
+            "entry": [
+                {
+                    "messaging": [
+                        {
+                            "sender": {"id": "12345"},
+                            "message": {"text": "Тест без mid"},
+                        }
+                    ]
+                }
+            ]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_process.assert_awaited_once_with("12345", "Тест без mid")
 
     def test_last_seen_updated_after_post(self):
         # Любой валидный POST обновляет last_seen (in-memory, глобально).

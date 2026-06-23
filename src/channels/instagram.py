@@ -56,14 +56,14 @@ class InstagramChannel(ChannelBase):
         logger.warning("instagram.webhook.verify_failed")
         return Response(status_code=403, content="Forbidden")
 
-    async def receive_message(self, payload: dict) -> list[tuple[str, str]]:
-        """Разобрать входящий webhook-платеж от Instagram.
+    async def receive_message(self, payload: dict) -> list[tuple[str, str, str]]:
+        """Разобрать входящий webhook от Instagram.
 
-        Возвращает список (sender_id, text) для каждого сообщения.
+        Возвращает список (sender_id, text, mid) для каждого сообщения.
         Фильтрует echo-сообщения (собственные ответы бота) чтобы
-        избежать бесконечного цикла.
+        избежать бесконечного цикла. mid нужен для дедупликации ретраев.
         """
-        messages: list[tuple[str, str]] = []
+        messages: list[tuple[str, str, str]] = []
 
         for entry in payload.get("entry", []):
             for messaging in entry.get("messaging", []):
@@ -72,10 +72,11 @@ class InstagramChannel(ChannelBase):
                 sender_id = messaging.get("sender", {}).get("id")
                 message = messaging.get("message", {})
                 text = message.get("text", "")
+                mid = message.get("mid", "")
 
                 if sender_id and text:
                     logger.info("instagram.message.received", sender_id=sender_id)
-                    messages.append((sender_id, text))
+                    messages.append((sender_id, text, mid))
 
         return messages
 

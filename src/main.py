@@ -30,6 +30,13 @@ _last_webhook_at: datetime | None = None
 # garbage-collect-нул задачу, на которую никто не держит ссылку.
 _background_tasks: set[asyncio.Task] = set()
 
+# Дедупликация входящих webhook'ов по message_id. Meta ретраит один и тот
+# же webhook при network blip или рестарте приложения — без дедупа каждое
+# сообщение может быть обработано 2-3 раза. In-memory, сбрасывается при
+# рестарте (достаточно, т.к. Meta ретраит только первые несколько секунд).
+_processed_mids: set[str] = set()
+_PROCESSED_MIDS_MAX = 10_000  # ограничение размера сета
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -191,7 +198,19 @@ async def receive_instagram_message(request: Request):
     # Запускаем обработку в фоне и отвечаем Meta 200 мгновенно.
     # Meta ретраит вебхук, если не получает 200 за несколько секунд;
     # LLM-обработка занимает ~50 сек, поэтому отвечать ДО неё критично.
-    for sender_id, text in messages:
+    for sender_id, text, mid in messages:
+        if mid:
+            if mid in _processed_mids:
+                logger.info("instagram.webhook.dedup_skipped", mid=mid)
+                continue
+            _processed_mids.add(mid)
+            # Лимитируем размер сета чтобы не утечь по памяти.
+            if len(_processed_mids) > _PROCESSED_MIDS_MAX:
+                # Удаляем самые старые записи (set не упорядочен, но
+                # для дедупа достаточно приблизительной очистки).
+                excess = len(_processed_mids) - _PROCESSED_MIDS_MAX
+                for _ in range(excess):
+                    _processed_mids.pop()
         logger.info("instagram.message.processing", sender_id=sender_id)
         task = asyncio.create_task(_process_safely(sender_id, text))
         _background_tasks.add(task)
