@@ -2,7 +2,6 @@ import json
 import sqlite3
 from pathlib import Path
 
-from langchain_core.messages import BaseMessage, message_to_dict, messages_from_dict
 from structlog import get_logger
 
 from src.ai.states import DialogState
@@ -52,11 +51,7 @@ async def get_session(client_id: str) -> DialogState:
     conn.close()
 
     if row:
-        state = json.loads(row["state"])
-        msgs = state.get("messages", [])
-        if msgs and isinstance(msgs[0], dict) and "type" in msgs[0]:
-            state["messages"] = messages_from_dict(msgs)
-        return state
+        return json.loads(row["state"])
     return _new_session(client_id)
 
 
@@ -82,17 +77,10 @@ def _new_session(client_id: str) -> DialogState:
 
 async def save_session(client_id: str, state: DialogState) -> None:
     conn = _get_connection()
-
-    serializable = dict(state)
-    serializable["messages"] = [
-        message_to_dict(m) if isinstance(m, BaseMessage) else m
-        for m in serializable.get("messages", [])
-    ]
-
     conn.execute(
         """INSERT OR REPLACE INTO sessions (client_id, state, updated_at)
            VALUES (?, ?, CURRENT_TIMESTAMP)""",
-        (client_id, json.dumps(serializable)),
+        (client_id, json.dumps(state, default=str)),
     )
     conn.commit()
     conn.close()
