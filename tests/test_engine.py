@@ -15,7 +15,7 @@ def _make_fake_llm():
     class FakeLLM:
         async def ainvoke(self, messages):
             text = messages[0].content if isinstance(messages, list) else str(messages)
-            if "Ты — ИИ-туристический агент" in text:
+            if "Определи action" in text or "ИИ-туристический агент" in text:
                 return FakeLLMResponse(
                     '{"action": "respond", "reply": "Здравствуйте! Чем могу помочь? 😊", "tour_params": {}, "selected_tour": null}'
                 )
