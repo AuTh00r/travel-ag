@@ -12,7 +12,7 @@ def get_llm() -> BaseChatModel:
     return ChatOpenAI(
         model=settings.deepseek_model,
         api_key=settings.deepseek_api_key,
-        base_url="https://api.deepseek.com/v1",
+        base_url="https://api.deepseek.com",
         temperature=0.7,
         max_tokens=1024,
         timeout=120,
@@ -26,7 +26,7 @@ def get_llm_json() -> BaseChatModel:
     return ChatOpenAI(
         model=settings.deepseek_model,
         api_key=settings.deepseek_api_key,
-        base_url="https://api.deepseek.com/v1",
+        base_url="https://api.deepseek.com",
         temperature=0.1,
         max_tokens=2048,
         timeout=120,
