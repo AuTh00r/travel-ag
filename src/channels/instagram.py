@@ -36,14 +36,7 @@ class InstagramChannel(ChannelBase):
             hashlib.sha256,
         ).hexdigest()
 
-        result = hmac.compare_digest(f"sha256={expected}", signature_header)
-        if not result:
-            logger.warning(
-                "instagram.webhook.signature_mismatch",
-                expected=f"sha256={expected}",
-                received=signature_header,
-            )
-        return result
+        return hmac.compare_digest(f"sha256={expected}", signature_header)
 
     async def verify_webhook(
         self,
