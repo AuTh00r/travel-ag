@@ -145,13 +145,6 @@ async def present_tours(state: DialogState) -> dict:
         return {
             "needs_escalation": True,
             "escalation_reason": "Туры не найдены по заданным параметрам",
-            "messages": [
-                AIMessage(
-                    content="К сожалению, по вашим параметрам я не нашёл подходящих туров 😔\n"
-                    "Но не переживайте! Я передам ваш запрос нашему менеджеру — "
-                    "он подберёт для вас индивидуальный вариант. 🏖️"
-                )
-            ],
         }
 
     context = build_context(state["messages"])
@@ -454,13 +447,21 @@ async def escalate(state: DialogState) -> dict:
     except Exception as exc:
         logger.error("telegram.notification.failed", error=str(exc))
 
+    reason = state.get("escalation_reason")
+    if reason and "не найдены" in reason:
+        user_msg = (
+            "К сожалению, по вашим параметрам я не нашёл подходящих туров 😔\n"
+            "Я передал ваш запрос нашему менеджеру — "
+            "он подберёт для вас индивидуальный вариант. 🏖️"
+        )
+    else:
+        user_msg = (
+            "Я передал ваш запрос нашему менеджеру 📋\n"
+            "Он свяжется с вами в ближайшее время! 🤝\n"
+            "Обычно это занимает 15–30 минут в рабочее время."
+        )
+
     return {
         "conversation_history": conversation_history,
-        "messages": [
-            AIMessage(
-                content="Я передал ваш запрос нашему менеджеру 📋\n"
-                "Он свяжется с вами в ближайшее время! 🤝\n"
-                "Обычно это занимает 15–30 минут в рабочее время."
-            )
-        ],
+        "messages": [AIMessage(content=user_msg)],
     }
