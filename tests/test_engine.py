@@ -197,6 +197,26 @@ async def test_converse_extracts_tour_params(mock_all_services):
         assert isinstance(params, dict)
 
 
+@pytest.mark.asyncio
+async def test_converse_normalizes_int_budget(mock_all_services):
+    """LLM вернул budget как int → converse преобразует в str."""
+    from src.ai.nodes import converse
+
+    mock_llm = AsyncMock()
+    mock_llm.ainvoke = AsyncMock(return_value=FakeLLMResponse(
+        '{"action": "search", "reply": "Ищу!", "tour_params": {"destination": "Турция", "budget": 1000, "travelers": 2}, "selected_tour": null}'
+    ))
+
+    state = _make_session(messages=[HumanMessage(content="Хочу тур до 1000")])
+
+    with patch("src.ai.nodes.get_llm_json", return_value=mock_llm):
+        result = await converse(state)
+    assert result["next_action"] == "search"
+    assert isinstance(result["tour_params"]["budget"], str)
+    assert result["tour_params"]["budget"] == "1000"
+    assert isinstance(result["tour_params"]["travelers"], int)
+
+
 # --- Booking flow tests ---
 
 
