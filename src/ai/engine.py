@@ -18,6 +18,11 @@ _BOOKING_STEPS = {"AWAIT_NAME", "AWAIT_PHONE", "AWAIT_EMAIL", "CONFIRM"}
 def route_from_start(state: DialogState) -> str:
     if state.get("current_step") in _BOOKING_STEPS:
         return "book"
+    # Если в сессии уже есть сообщения — приветствие уже было, идём
+    # сразу к классификации. Иначе на каждом сообщении бот заново
+    # здоровался, потому что greet ставит current_step="greeting".
+    if state.get("messages"):
+        return "classify"
     return "greeting"
 
 
@@ -55,7 +60,7 @@ def build_graph() -> StateGraph:
     graph.add_conditional_edges(
         START,
         route_from_start,
-        {"greeting": "greeting", "book": "book"},
+        {"greeting": "greeting", "book": "book", "classify": "classify"},
     )
 
     graph.add_edge("greeting", "classify")

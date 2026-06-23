@@ -76,6 +76,36 @@ def test_graph_builds():
 
 @pytest.mark.asyncio
 async def test_greeting_flow(mock_all_services):
+    """Первое сообщение (пустая сессия) → greeting → classify."""
+    graph = build_graph()
+
+    session = {
+        "messages": [],
+        "client_id": "test_123",
+        "client_name": None,
+        "client_phone": None,
+        "client_email": None,
+        "request_type": None,
+        "tour_params": {},
+        "found_tours": [],
+        "selected_tour": None,
+        "faq_answer": None,
+        "needs_escalation": False,
+        "escalation_reason": None,
+        "current_step": "greeting",
+        "awaiting_field": None,
+        "conversation_history": [],
+    }
+
+    result = await graph.ainvoke(session)
+    assert result is not None
+    assert "messages" in result
+    assert len(result["messages"]) > 0
+
+
+@pytest.mark.asyncio
+async def test_returning_user_skips_greeting(mock_all_services):
+    """Повторное сообщение (непустая сессия) → classify без greeting."""
     graph = build_graph()
 
     session = {
@@ -98,8 +128,8 @@ async def test_greeting_flow(mock_all_services):
 
     result = await graph.ainvoke(session)
     assert result is not None
-    assert "messages" in result
-    assert len(result["messages"]) > 0
+    # При непустых messages greeting пропускается — classify идёт сразу.
+    # Найденные AIMessage'ы должны быть от classify/clarify, а не от greet.
 
 
 @pytest.mark.asyncio
