@@ -129,16 +129,21 @@ async def process_with_ai(sender_id: str, text: str) -> None:
     graph = build_graph()
     result = await graph.ainvoke(session)
 
+    ai_texts = []
     for msg in result.get("messages", []):
         if (
             hasattr(msg, "content")
             and msg.content
             and not isinstance(msg, HumanMessage)
         ):
-            try:
-                await instagram.send_message(sender_id, msg.content)
-            except Exception:
-                logger.exception("instagram.message.send_failed", sender_id=sender_id)
+            ai_texts.append(msg.content)
+
+    if ai_texts:
+        combined = "\n\n".join(ai_texts)
+        try:
+            await instagram.send_message(sender_id, combined)
+        except Exception:
+            logger.exception("instagram.message.send_failed", sender_id=sender_id)
 
     await save_session(sender_id, result)
 
