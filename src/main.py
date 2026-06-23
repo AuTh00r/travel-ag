@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -22,6 +23,10 @@ instagram = InstagramChannel()
 # Время последнего POST-запроса от Meta на webhook (для быстрой диагностики
 # без чтения логов; in-memory, не персистентно между рестартами).
 _last_webhook_at: datetime | None = None
+
+# Блокировки по sender_id — Meta иногда шлёт дублирующие webhook'и,
+# и без последовательной обработки пользователь получает N одинаковых ответов.
+_processing_locks: dict[str, asyncio.Lock] = {}
 
 
 @asynccontextmanager
@@ -120,38 +125,45 @@ async def webhook_last_seen():
     }
 
 
+async def _acquire_lock(sender_id: str) -> asyncio.Lock:
+    if sender_id not in _processing_locks:
+        _processing_locks[sender_id] = asyncio.Lock()
+    return _processing_locks[sender_id]
+
+
 async def process_with_ai(sender_id: str, text: str) -> None:
-    from src.ai.engine import build_graph
+    lock = await _acquire_lock(sender_id)
+    async with lock:
+        from src.ai.engine import build_graph
 
-    session = await get_session(sender_id)
-    session["messages"].append(HumanMessage(content=text))
+        session = await get_session(sender_id)
+        session["messages"].append(HumanMessage(content=text))
 
-    graph = build_graph()
-    result = await graph.ainvoke(session)
+        graph = build_graph()
+        result = await graph.ainvoke(session)
 
-    msg_count_before = len(session.get("messages", []))
-    msg_count_after = len(result.get("messages", []))
-    new_messages = result.get("messages", [])[msg_count_before:]
+        msg_count_before = len(session.get("messages", []))
+        new_messages = result.get("messages", [])[msg_count_before:]
 
-    logger.debug("process_with_ai.msgs", before=msg_count_before, after=msg_count_after, new=len(new_messages))
+        ai_texts = []
+        for msg in new_messages:
+            if (
+                hasattr(msg, "content")
+                and msg.content
+                and not isinstance(msg, HumanMessage)
+            ):
+                ai_texts.append(msg.content)
 
-    ai_texts = []
-    for msg in new_messages:
-        if (
-            hasattr(msg, "content")
-            and msg.content
-            and not isinstance(msg, HumanMessage)
-        ):
-            ai_texts.append(msg.content)
+        if ai_texts:
+            combined = "\n\n".join(ai_texts)
+            try:
+                await instagram.send_message(sender_id, combined)
+            except Exception:
+                logger.exception(
+                    "instagram.message.send_failed", sender_id=sender_id
+                )
 
-    if ai_texts:
-        combined = "\n\n".join(ai_texts)
-        try:
-            await instagram.send_message(sender_id, combined)
-        except Exception:
-            logger.exception("instagram.message.send_failed", sender_id=sender_id)
-
-    await save_session(sender_id, result)
+        await save_session(sender_id, result)
 
 
 @app.post("/webhook/instagram")
