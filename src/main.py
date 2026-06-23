@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -42,11 +43,14 @@ _PROCESSED_MIDS_MAX = 10_000  # ограничение размера сета
 async def lifespan(app: FastAPI):
     from src.db.faq_db import load_faq_to_chroma
 
-    try:
-        count = load_faq_to_chroma()
-        logger.info("faq.ready", entries=count)
-    except Exception:
-        logger.exception("faq.load_failed")
+    def _load_faq():
+        try:
+            count = load_faq_to_chroma()
+            logger.info("faq.ready", entries=count)
+        except Exception:
+            logger.exception("faq.load_failed")
+
+    threading.Thread(target=_load_faq, daemon=True).start()
     yield
 
 
