@@ -192,6 +192,7 @@ async def receive_instagram_message(request: Request):
     _last_webhook_at = datetime.now(timezone.utc)
 
     sig = request.headers.get("X-Hub-Signature-256")
+    logger.debug("instagram.webhook.signature_header", sig=sig, headers=dict(request.headers))
     if not instagram.verify_signature(raw_body, sig):
         logger.warning("instagram.webhook.invalid_signature")
         return Response(status_code=403, content="Invalid signature")
