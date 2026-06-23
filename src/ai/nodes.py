@@ -50,7 +50,11 @@ async def clarify(state: DialogState) -> dict:
             )
         ]
     )
-    result = json.loads(response.content)
+    try:
+        result = json.loads(response.content)
+    except (json.JSONDecodeError, TypeError):
+        logger.warning("clarify.json_parse_failed", raw=response.content)
+        result = {}
 
     updated_params = {**known}
     for key in ("destination", "dates", "budget", "travelers", "tour_type"):
