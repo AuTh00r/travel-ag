@@ -15,7 +15,7 @@ def get_llm() -> BaseChatModel:
         base_url="https://api.deepseek.com/v1",
         temperature=0.7,
         max_tokens=1024,
-        timeout=30,
+        timeout=120,
     )
 
 
@@ -29,6 +29,6 @@ def get_llm_json() -> BaseChatModel:
         base_url="https://api.deepseek.com/v1",
         temperature=0.1,
         max_tokens=2048,
-        timeout=30,
+        timeout=120,
         model_kwargs={"response_format": {"type": "json_object"}},
     )
