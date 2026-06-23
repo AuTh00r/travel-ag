@@ -62,9 +62,10 @@ async def clarify(state: DialogState) -> dict:
             updated_params[key] = result[key]
 
     missing = result.get("missing_params", [])
+    should_clarify = bool(missing) and len(state["messages"]) < 8
 
     clarify_messages = []
-    if missing and len(state["messages"]) < 8:
+    if should_clarify:
         llm = get_llm()
         clarify_response = await llm.ainvoke(
             [HumanMessage(content=CLARIFY_PROMPT.format(missing_param=missing[0]))]
@@ -73,7 +74,7 @@ async def clarify(state: DialogState) -> dict:
 
     return {
         "tour_params": updated_params,
-        "current_step": "clarify" if missing else "search",
+        "current_step": "clarify" if should_clarify else "search",
         "awaiting_field": missing[0] if missing else None,
         "messages": clarify_messages,
     }

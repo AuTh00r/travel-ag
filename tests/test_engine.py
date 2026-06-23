@@ -133,6 +133,43 @@ async def test_returning_user_skips_greeting(mock_all_services):
 
 
 @pytest.mark.asyncio
+async def test_clarify_avoids_infinite_loop_at_8_messages(mock_all_services):
+    """При ≥8 сообщениях clarify не циклится, а уходит в search.
+
+    Если missing_params не пуст, но диалог уже длинный (>8 сообщений),
+    should_clarify=False → current_step='search' вместо 'clarify'.
+    """
+    from src.ai.nodes import clarify
+    from langchain_core.messages import AIMessage
+
+    history = [HumanMessage(content=f"msg_{i}") for i in range(8)]
+    state = {
+        "messages": history,
+        "client_id": "looptest",
+        "client_name": None,
+        "client_phone": None,
+        "client_email": None,
+        "request_type": "tour_search",
+        "tour_params": {"destination": "Турция"},
+        "found_tours": [],
+        "selected_tour": None,
+        "faq_answer": None,
+        "needs_escalation": False,
+        "escalation_reason": None,
+        "current_step": "clarify",
+        "awaiting_field": "dates",
+        "conversation_history": [],
+    }
+
+    result = await clarify(state)
+    # Даже если есть missing_params (>8 сообщений), переходим в search
+    assert result["current_step"] == "search", (
+        f"Expected 'search', got '{result['current_step']}' — "
+        "clarify would loop"
+    )
+
+
+@pytest.mark.asyncio
 async def test_state_schema():
     from src.ai.states import DialogState
 
