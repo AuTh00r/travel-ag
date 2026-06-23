@@ -15,10 +15,17 @@ logger = get_logger()
 class InstagramChannel(ChannelBase):
     """Канал Instagram Direct через Meta Graph API."""
 
-    BASE_URL = "https://graph.facebook.com/v21.0"
+    BASE_URL = "https://graph.facebook.com/v25.0"
 
     def verify_signature(self, raw_body: bytes, signature_header: str | None) -> bool:
         if not settings.instagram_app_secret:
+            # Подпись НЕ проверяется — допустимо только для локальных тестов.
+            # В проде INSTAGRAM_APP_SECRET обязан быть задан, иначе webhook
+            # принимает произвольные POST без проверки подлинности.
+            logger.warning(
+                "instagram.webhook.signature_skipped",
+                reason="INSTAGRAM_APP_SECRET is empty",
+            )
             return True
         if not signature_header:
             return False
