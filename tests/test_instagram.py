@@ -95,7 +95,7 @@ class TestWebhookReceive:
         settings.instagram_access_token = ""
         settings.instagram_app_secret = ""  # отключаем проверку подписи для тестов
 
-    @patch("src.main.process_with_ai")
+    @patch("src.main._process_safely")
     def test_receive_valid_message(self, mock_process):
         mock_process.return_value = None
         payload = {
@@ -112,13 +112,14 @@ class TestWebhookReceive:
         }
         response = client.post("/webhook/instagram", json=payload)
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        # Вебхук отвечает мгновенно пустым телом, обработка идёт в фоне.
+        assert response.text == ""
         mock_process.assert_awaited_once_with("12345", "Привет! Хочу тур в Турцию")
 
     def test_receive_empty_payload(self):
         response = client.post("/webhook/instagram", json={"entry": []})
         assert response.status_code == 200
-        assert response.json() == {"status": "ok"}
+        assert response.text == ""
 
     def test_last_seen_updated_after_post(self):
         # Любой валидный POST обновляет last_seen (in-memory, глобально).

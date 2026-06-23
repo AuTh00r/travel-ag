@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
@@ -22,6 +23,12 @@ instagram = InstagramChannel()
 # Время последнего POST-запроса от Meta на webhook (для быстрой диагностики
 # без чтения логов; in-memory, не персистентно между рестартами).
 _last_webhook_at: datetime | None = None
+
+# Активные фоновые задачи обработки сообщений. Meta ретраит вебхук, если
+# не получает 200 быстро, а LLM-обработка идёт ~50 сек — поэтому отвечаем
+# 200 мгновенно, а обработку пускаем в фоне. Сет нужен, чтобы asyncio не
+# garbage-collect-нул задачу, на которую никто не держит ссылку.
+_background_tasks: set[asyncio.Task] = set()
 
 
 @asynccontextmanager
@@ -143,6 +150,26 @@ async def process_with_ai(sender_id: str, text: str) -> None:
     await save_session(sender_id, result)
 
 
+async def _process_safely(sender_id: str, text: str) -> None:
+    """Фоновая обработка сообщения.
+
+    Запускается через asyncio.create_task после немедленного ответа 200 Meta.
+    Логирует свои ошибки, т.к. request-контекст уже закрыт.
+    """
+    try:
+        await process_with_ai(sender_id, text)
+    except Exception:
+        logger.exception("ai.processing.failed", sender_id=sender_id)
+        try:
+            await instagram.send_message(
+                sender_id,
+                "Произошла техническая ошибка. "
+                "Наши специалисты уже работают над этим. Попробуйте позже! 🛠️",
+            )
+        except Exception:
+            logger.exception("instagram.message.send_failed", sender_id=sender_id)
+
+
 @app.post("/webhook/instagram")
 async def receive_instagram_message(request: Request):
     global _last_webhook_at
@@ -161,18 +188,13 @@ async def receive_instagram_message(request: Request):
     messages = await instagram.receive_message(payload)
     logger.info("instagram.webhook.received", messages=len(messages))
 
+    # Запускаем обработку в фоне и отвечаем Meta 200 мгновенно.
+    # Meta ретраит вебхук, если не получает 200 за несколько секунд;
+    # LLM-обработка занимает ~50 сек, поэтому отвечать ДО неё критично.
     for sender_id, text in messages:
         logger.info("instagram.message.processing", sender_id=sender_id)
-        try:
-            await process_with_ai(sender_id, text)
-        except Exception:
-            logger.exception("ai.processing.failed", sender_id=sender_id)
-            try:
-                await instagram.send_message(
-                    sender_id,
-                    "Произошла техническая ошибка. Наши специалисты уже работают над этим. Попробуйте позже! 🛠️",
-                )
-            except Exception:
-                logger.exception("instagram.message.send_failed", sender_id=sender_id)
+        task = asyncio.create_task(_process_safely(sender_id, text))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
 
-    return {"status": "ok"}
+    return Response(status_code=200, content="")
