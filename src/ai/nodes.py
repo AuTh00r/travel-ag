@@ -36,7 +36,16 @@ async def classify_node(state: DialogState) -> dict:
 
 
 async def clarify(state: DialogState) -> dict:
-    last_message = state["messages"][-1].content
+    last_human = next(
+        (m for m in reversed(state["messages"]) if isinstance(m, HumanMessage)),
+        None,
+    )
+    if not last_human:
+        return {
+            "current_step": "search",
+            "tour_params": state.get("tour_params", {}),
+        }
+    last_message = last_human.content
     known = state.get("tour_params", {})
 
     llm = get_llm_json()
@@ -62,7 +71,8 @@ async def clarify(state: DialogState) -> dict:
             updated_params[key] = result[key]
 
     missing = result.get("missing_params", [])
-    should_clarify = bool(missing) and len(state["messages"]) < 8
+    ai_msgs = [m for m in state["messages"] if not isinstance(m, HumanMessage)]
+    should_clarify = bool(missing) and len(ai_msgs) < 3
 
     clarify_messages = []
     if should_clarify:
@@ -309,12 +319,12 @@ async def escalate(state: DialogState) -> dict:
     notifier = TelegramNotifier()
     try:
         await notifier.notify_manager(
-            client_name=state.get("client_name", "Не указано"),
-            client_phone=state.get("client_phone", "Не указан"),
-            client_email=state.get("client_email", "Не указан"),
+            client_name=state.get("client_name") or "Не указано",
+            client_phone=state.get("client_phone") or "Не указан",
+            client_email=state.get("client_email") or "Не указан",
             request_summary=_summarize_request(state),
             conversation_history=conversation_history,
-            tag=state.get("escalation_reason", "Нужен звонок"),
+            tag=state.get("escalation_reason") or "Нужен звонок",
         )
     except Exception as exc:
         logger.error("telegram.notification.failed", error=str(exc))

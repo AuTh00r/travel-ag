@@ -38,6 +38,12 @@ _background_tasks: set[asyncio.Task] = set()
 _processed_mids: set[str] = set()
 _PROCESSED_MIDS_MAX = 10_000  # ограничение размера сета
 
+# Локи для сериализации обработки сообщений одного клиента.
+# Предотвращает гонку: два сообщения от одного пользователя не должны
+# обрабатываться параллельно (иначе оба читают одну сессию и дублируют ответ).
+_locks: dict[str, asyncio.Lock] = {}
+_locks_lock = asyncio.Lock()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -138,28 +144,37 @@ async def webhook_last_seen():
     }
 
 
+async def _get_lock(sender_id: str) -> asyncio.Lock:
+    async with _locks_lock:
+        if sender_id not in _locks:
+            _locks[sender_id] = asyncio.Lock()
+        return _locks[sender_id]
+
+
 async def process_with_ai(sender_id: str, text: str) -> None:
     from src.ai.engine import build_graph
 
-    session = await get_session(sender_id)
-    prev_count = len(session["messages"])
-    session["messages"].append(HumanMessage(content=text))
+    lock = await _get_lock(sender_id)
+    async with lock:
+        session = await get_session(sender_id)
+        prev_count = len(session["messages"])
+        session["messages"].append(HumanMessage(content=text))
 
-    graph = build_graph()
-    result = await graph.ainvoke(session)
+        graph = build_graph()
+        result = await graph.ainvoke(session)
 
-    for msg in result.get("messages", [])[prev_count:]:
-        if (
-            hasattr(msg, "content")
-            and msg.content
-            and not isinstance(msg, HumanMessage)
-        ):
-            try:
-                await instagram.send_message(sender_id, msg.content)
-            except Exception:
-                logger.exception("instagram.message.send_failed", sender_id=sender_id)
+        for msg in result.get("messages", [])[prev_count:]:
+            if (
+                hasattr(msg, "content")
+                and msg.content
+                and not isinstance(msg, HumanMessage)
+            ):
+                try:
+                    await instagram.send_message(sender_id, msg.content)
+                except Exception:
+                    logger.exception("instagram.message.send_failed", sender_id=sender_id)
 
-    await save_session(sender_id, result)
+        await save_session(sender_id, result)
 
 
 async def _process_safely(sender_id: str, text: str) -> None:

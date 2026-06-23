@@ -11,7 +11,9 @@ TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 MAX_HISTORY_LINES = 15
 
 
-def _escape_markdown(text: str) -> str:
+def _escape_markdown(text: str | None) -> str:
+    if text is None:
+        return ""
     special = r"\_*[]()~`>#+-=|{}.!"
     for ch in special:
         text = text.replace(ch, "\\" + ch)
