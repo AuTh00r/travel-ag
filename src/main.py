@@ -138,12 +138,13 @@ async def process_with_ai(sender_id: str, text: str) -> None:
     from src.ai.engine import build_graph
 
     session = await get_session(sender_id)
+    prev_count = len(session["messages"])
     session["messages"].append(HumanMessage(content=text))
 
     graph = build_graph()
     result = await graph.ainvoke(session)
 
-    for msg in result.get("messages", []):
+    for msg in result.get("messages", [])[prev_count:]:
         if (
             hasattr(msg, "content")
             and msg.content
