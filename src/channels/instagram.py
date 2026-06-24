@@ -81,10 +81,22 @@ class InstagramChannel(ChannelBase):
         return messages
 
     async def send_message(self, recipient_id: str, text: str) -> None:
-        """Отправить текстовое сообщение через Instagram Graph API."""
+        """Отправить текстовое сообщение через Instagram Graph API.
+
+        Instagram DM лимит — 1000 символов. Если длиннее — обрезаем.
+        """
 
         if not settings.instagram_access_token:
             raise InstagramError("INSTAGRAM_ACCESS_TOKEN не задан")
+
+        max_len = 1000
+        if len(text) > max_len:
+            logger.warning(
+                "instagram.message.truncated",
+                original_len=len(text),
+                max_len=max_len,
+            )
+            text = text[: max_len - 3] + "..."
 
         url = f"{self.BASE_URL}/me/messages"
         params = {"access_token": settings.instagram_access_token}
