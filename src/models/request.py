@@ -1,10 +1,12 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from pydantic import BaseModel, Field
 
+MINSK_TZ = timezone(timedelta(hours=3))
+
 
 class BookingRequest(BaseModel):
-    created_at: datetime = Field(default_factory=datetime.now)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(MINSK_TZ))
     name: str
     phone: str
     email: str
