@@ -1,13 +1,17 @@
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 
+from datetime import date as date_type
+
+
 def build_full_prompt(
     tours_text: str,
     faq_context: str,
     history: list[dict],
     message: str,
+    current_date: date_type | None = None,
 ) -> list[SystemMessage | HumanMessage | AIMessage]:
-    system = _build_system(tours_text, faq_context)
+    system = _build_system(tours_text, faq_context, current_date)
     messages: list[SystemMessage | HumanMessage | AIMessage] = [
         SystemMessage(content=system)
     ]
@@ -20,9 +24,12 @@ def build_full_prompt(
     return messages
 
 
-def _build_system(tours_text: str, faq_context: str) -> str:
+def _build_system(
+    tours_text: str, faq_context: str, current_date: date_type | None = None
+) -> str:
+    today = (current_date or date_type.today()).strftime("%d.%m.%Y")
     parts = [
-        _BASE_RULES,
+        _BASE_RULES.format(today=today),
         _SECURITY_RULES,
     ]
 
@@ -39,10 +46,12 @@ def _build_system(tours_text: str, faq_context: str) -> str:
 
 _BASE_RULES = """Ты — менеджер туристической компании «Сандита» (Минск). Ты отвечаешь клиентам в Instagram.
 
+Сегодня: {today}
+
 ПРАВИЛА ПОВЕДЕНИЯ:
 - Отвечай только по-русски, дружелюбно, уважительно и кратко (максимум 950 символов, укладывайся в лимит Instagram)
 - Используй ТОЛЬКО информацию из базы туров ниже. Ничего не придумывай.
-- Изучи ДАТЫ ТУРОВ. НЕ присылвай устаревшие туры.
+- ФИЛЬТР ДАТ: внизу есть даты каждого тура. Сравнивай их с сегодняшним числом ({today}). Показывай клиенту ТОЛЬКО туры, у которых хотя бы одна дата начинается сегодня или позже. Если все даты тура уже прошли — не упоминай его.
 - Если клиент спрашивает о туре, которого нет в базе — скажи: «Уточню информацию, напишите в директ или позвоните нам»
 - Если тебе написали название тура, ищи в базе тур с таким же названием (или содержащим такое же название)
 - На любой тур, который ты упоминаешь / клиент упоминает, давай ссылку (если тур актуальный). Ссылка указана в конце каждого документа.
