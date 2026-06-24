@@ -34,6 +34,10 @@ class Settings(BaseSettings):
     # Ссылка на форму бронирования / оплаты
     booking_form_url: str = ""
 
+    # Security
+    max_message_length: int = 1000
+    max_messages_per_minute: int = 5
+
     # Настройки сервера
     log_level: str = "INFO"
     host: str = "0.0.0.0"

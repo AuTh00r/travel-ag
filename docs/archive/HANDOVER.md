@@ -1,3 +1,9 @@
+> **УСТАРЕЛО** — описывает интеграцию tours/ в LangGraph-архитектуру.
+> LangGraph удалён (коммит `35baecd`), но DOCX-загрузка и отказ от Google
+> Sheets как источника туров — выполнены. Оставлено для истории.
+>
+> Актуальное описание: `docs/ARCHITECTURE.md`
+
 # Handover — Travel Agent Bot Integration
 
 ## Context

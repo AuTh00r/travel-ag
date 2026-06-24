@@ -5,70 +5,61 @@ import pytest
 from src.services.telegram_notify import (
     TelegramNotifier,
     _build_notification_text,
-    _escape_markdown,
-    _format_conversation,
 )
 
 
-def test_escape_markdown():
-    text = "Hello _world_ *bold* [link](url)"
-    result = _escape_markdown(text)
-    assert "\\_" in result
-    assert "\\*" in result
-    assert "\\[" in result
-    assert "\\]" in result
-
-
-def test_format_conversation_empty():
-    assert _format_conversation([]) == "_Нет сообщений_"
-
-
-def test_format_conversation():
-    history = [
-        {"role": "user", "text": "Хочу тур в Турцию"},
-        {"role": "assistant", "text": "Отличный выбор!"},
-    ]
-    result = _format_conversation(history)
-    assert "Клиент" in result
-    assert "Агент" in result
-    assert "Турцию" in result
-    assert "выбор" in result
-
-
-def test_format_conversation_truncated():
-    long_text = "A" * 500
-    history = [{"role": "user", "text": long_text}]
-    result = _format_conversation(history)
-    assert len(result) < len(long_text) + 100
-
-
-def test_build_notification_text():
+def test_build_notification_with_handle():
     text = _build_notification_text(
-        client_name="Иван Петров",
+        sender_id="123",
+        instagram_handle="ivan_petrov",
+        context="ищет тур",
+        client_name="Иван",
         client_phone="+375291234567",
-        client_email="ivan@mail.com",
-        request_summary="Хочу тур в Турцию",
-        conversation_history=[{"role": "user", "text": "Привет"}],
-        tag="Нужен звонок",
     )
-    assert "Иван Петров" in text
-    assert "375291234567" in text
-    assert "ivan@mail" in text
-    assert "Турцию" in text
-    assert "Нужен звонок" in text
+    assert "@ivan_petrov" in text
+    assert "+375291234567" in text
+    assert "ищет тур" in text
+    assert "Иван" in text
+
+
+def test_build_notification_no_contacts():
+    text = _build_notification_text(
+        sender_id="123",
+        instagram_handle=None,
+        context="ищет тур",
+    )
+    assert "123" in text
+    assert "Контакты:" not in text
+
+
+def test_build_notification_no_handle_falls_back_to_sender_id():
+    text = _build_notification_text(
+        sender_id="sender_456",
+        instagram_handle=None,
+        context="жалоба на сервис",
+    )
+    assert "sender_456" in text
+    assert "@" not in text
 
 
 def test_build_notification_without_sheets_id():
     with patch("src.services.telegram_notify.settings.google_requests_sheet_id", ""):
         text = _build_notification_text(
-            client_name="Тест",
-            client_phone="+375291234567",
-            client_email="test@test.com",
-            request_summary="Тест",
-            conversation_history=[],
-            tag="тег",
+            sender_id="123",
+            instagram_handle="test",
+            context="тест",
         )
         assert "не указан" in text.lower()
+
+
+def test_build_notification_contacts_section_shown_when_any_contact():
+    text = _build_notification_text(
+        sender_id="123",
+        context="тест",
+        client_name="Петр",
+    )
+    assert "Контакты:" in text
+    assert "Петр" in text
 
 
 @pytest.mark.asyncio
@@ -79,11 +70,8 @@ async def test_notify_manager_missing_config():
         notifier = TelegramNotifier()
         with pytest.raises(Exception):
             await notifier.notify_manager(
-                client_name="Тест",
-                client_phone="+375291234567",
-                client_email="test@test.com",
-                request_summary="Тест",
-                conversation_history=[],
+                sender_id="123",
+                context="тест",
             )
 
 
@@ -99,11 +87,12 @@ async def test_notify_manager_success():
     with patch("src.services.telegram_notify.AsyncClient", return_value=mock_client):
         notifier = TelegramNotifier()
         await notifier.notify_manager(
+            sender_id="123",
+            instagram_handle="ivan_petrov",
+            context="ищет тур в Турцию",
             client_name="Иван",
             client_phone="+375291234567",
             client_email="ivan@mail.com",
-            request_summary="Турция",
-            conversation_history=[],
             tag="Нужен звонок",
         )
 
@@ -111,7 +100,8 @@ async def test_notify_manager_success():
     _, kwargs = mock_client.post.call_args
     assert kwargs["json"]["chat_id"] is not None
     assert kwargs["json"]["parse_mode"] == "Markdown"
-    assert "Иван" in kwargs["json"]["text"]
+    assert "ivan_petrov" in kwargs["json"]["text"]
+    assert "ищет тур" in kwargs["json"]["text"]
 
 
 @pytest.mark.asyncio
@@ -128,42 +118,6 @@ async def test_notify_manager_api_error():
         notifier = TelegramNotifier()
         with pytest.raises(Exception):
             await notifier.notify_manager(
-                client_name="Иван",
-                client_phone="+375291234567",
-                client_email="ivan@mail.com",
-                request_summary="Турция",
-                conversation_history=[],
-                tag="тест",
+                sender_id="123",
+                context="тест",
             )
-
-
-@pytest.mark.asyncio
-async def test_notify_manager_called_on_escalation_marker():
-    """Проверяет, что TelegramNotifier вызывается при ===МЕНЕДЖЕР===."""
-    from src.main import _extract_escalation
-
-    text = """Ответ...
-
-===МЕНЕДЖЕР===
-Причина: Сложный запрос
-===МЕНЕДЖЕР==="""
-
-    reason = _extract_escalation(text)
-    assert reason == "Сложный запрос"
-
-    notifier = TelegramNotifier()
-    with patch.object(notifier, "notify_manager", new=AsyncMock()) as mock_notify:
-        await notifier.notify_manager(
-            client_name="Иван",
-            client_phone="+375291234567",
-            client_email="ivan@mail.com",
-            request_summary=reason,
-            conversation_history=[{"role": "user", "content": "Хочу тур"}],
-            tag=reason,
-        )
-
-    mock_notify.assert_called_once()
-    call_kwargs = mock_notify.call_args[1]
-    assert call_kwargs["client_name"] == "Иван"
-    assert call_kwargs["client_phone"] == "+375291234567"
-    assert call_kwargs["tag"] == "Сложный запрос"

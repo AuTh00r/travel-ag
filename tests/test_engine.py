@@ -37,17 +37,18 @@ Email: ivan@mail.com
 
 
 class TestExtractEscalation:
-    def test_valid_escalation(self):
-        text = """Ответ...
-
-===МЕНЕДЖЕР===
-Причина: Не нашёл подходящих туров
-===МЕНЕДЖЕР==="""
+    def test_extract_escalation_with_context(self):
+        text = "ответ\n\n===МЕНЕДЖЕР===\nПричина: просит менеджера\nКонтекст: ищет тур в Турцию\n===МЕНЕДЖЕР==="
         result = _extract_escalation(text)
-        assert result == "Не нашёл подходящих туров"
+        assert result == ("просит менеджера", "ищет тур в Турцию")
 
-    def test_no_escalation(self):
-        assert _extract_escalation("Просто ответ") is None
+    def test_extract_escalation_without_context(self):
+        text = "ответ\n\n===МЕНЕДЖЕР===\nПричина: просит менеджера\n===МЕНЕДЖЕР==="
+        result = _extract_escalation(text)
+        assert result == ("просит менеджера", "просит менеджера")
+
+    def test_extract_escalation_no_marker(self):
+        assert _extract_escalation("обычный ответ") is None
 
 
 class TestStripMarkers:
@@ -134,6 +135,7 @@ async def test_process_with_ai_smoke():
         patch("src.db.faq_db.search_faq", return_value=[]),
         patch("src.main.save_session"),
         patch("src.main.instagram.send_message"),
+        patch("src.main.instagram.get_username", return_value=None),
     ]
     for p in patches:
         p.start()
@@ -180,6 +182,7 @@ Email: ivan@mail.com
         patch("src.db.faq_db.search_faq", return_value=[]),
         patch("src.main.save_session"),
         patch("src.main.instagram.send_message"),
+        patch("src.main.instagram.get_username", return_value=None),
         patch("src.main.GoogleSheetsService", return_value=mock_sheets),
         patch("src.main.save_booking_request"),
     ]

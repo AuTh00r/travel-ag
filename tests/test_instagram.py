@@ -256,3 +256,70 @@ class TestInstagramChannelSend:
         channel = InstagramChannel()
         with pytest.raises(InstagramError, match="ACCESS_TOKEN"):
             await channel.send_message("12345", "Hello")
+
+
+class TestGetUsername:
+    @pytest.mark.asyncio
+    async def test_get_username_success(self):
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_access_token = "test_token"
+        InstagramChannel._username_cache.clear()
+
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = AsyncMock()
+        mock_response.json = Mock(return_value={"username": "ivan_petrov"})
+
+        channel = InstagramChannel()
+        with patch.object(httpx.AsyncClient, "get", new=AsyncMock()) as mock_get:
+            mock_get.return_value = mock_response
+            result = await channel.get_username("12345")
+
+        assert result == "ivan_petrov"
+
+    @pytest.mark.asyncio
+    async def test_get_username_cached(self):
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_access_token = "test_token"
+        InstagramChannel._username_cache.clear()
+        InstagramChannel._username_cache["12345"] = "cached_user"
+
+        channel = InstagramChannel()
+        with patch.object(httpx.AsyncClient, "get") as mock_get:
+            result = await channel.get_username("12345")
+
+        assert result == "cached_user"
+        mock_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_get_username_fallback_on_error(self):
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_access_token = "test_token"
+        InstagramChannel._username_cache.clear()
+
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = Mock(
+            side_effect=httpx.HTTPStatusError(
+                "error", request=Mock(spec=httpx.Request), response=mock_response
+            )
+        )
+
+        channel = InstagramChannel()
+        with patch.object(httpx.AsyncClient, "get", new=AsyncMock()) as mock_get:
+            mock_get.return_value = mock_response
+            result = await channel.get_username("12345")
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_get_username_no_token(self):
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_access_token = ""
+        InstagramChannel._username_cache.clear()
+
+        channel = InstagramChannel()
+        result = await channel.get_username("12345")
+        assert result is None

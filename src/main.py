@@ -190,16 +190,29 @@ def _extract_booking(text: str) -> dict | None:
     }
 
 
-def _extract_escalation(text: str) -> str | None:
+def _extract_escalation(text: str) -> tuple[str, str] | None:
+    """Парсит ===МЕНЕДЖЕР=== и возвращает (причина, контекст).
+
+    Контекст опционален — если не заполнен, дублирует причину.
+    Если маркера нет — None.
+    """
     m = _ESCALATION_RE.search(text)
     if not m:
         return None
+    reason = ""
+    context = ""
     for line in m.group(1).strip().split("\n"):
-        if ":" in line:
-            key, val = line.split(":", 1)
-            if key.strip().lower() == "причина":
-                return val.strip()
-    return m.group(1).strip()
+        if ":" not in line:
+            continue
+        key, val = line.split(":", 1)
+        key_s = key.strip().lower()
+        if key_s == "причина":
+            reason = val.strip()
+        elif key_s == "контекст":
+            context = val.strip()
+    if not reason:
+        reason = m.group(1).strip()
+    return reason, context or reason
 
 
 def _strip_markers(text: str) -> str:
@@ -208,12 +221,35 @@ def _strip_markers(text: str) -> str:
     return text.strip()
 
 
+def _guard_reply(reason: str) -> str:
+    replies = {
+        "too_long": "Сообщение слишком длинное. Напишите покороче — я обязательно помогу 😊",
+        "injection": "Я могу помочь только с вопросами о наших турах 😊",
+    }
+    return replies.get(reason, "Не понял вопрос. Попробуйте переформулировать!")
+
+
 async def process_with_ai(sender_id: str, text: str) -> None:
     from src.ai.prompts import build_full_prompt
     from src.db.faq_db import search_faq
+    from src.services.guard import check_input, check_output, is_rate_limited
     from src.services.llm import get_llm
     from src.services.telegram_notify import TelegramNotifier
     from src.services.tour_loader import get_tours_text
+
+    if is_rate_limited(sender_id):
+        logger.warning("guard.rate_limited", sender_id=sender_id)
+        await instagram.send_message(
+            sender_id,
+            "Вы пишете слишком часто. Пожалуйста, подождите минуту 🙏",
+        )
+        return
+
+    ok, reason = check_input(text)
+    if not ok:
+        logger.warning("guard.input_rejected", sender_id=sender_id, reason=reason)
+        await instagram.send_message(sender_id, _guard_reply(reason))
+        return
 
     lock = await _get_lock(sender_id)
     async with lock:
@@ -232,6 +268,8 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         except Exception:
             logger.debug("faq.search_skipped")
 
+        instagram_handle = await instagram.get_username(sender_id)
+
         messages = build_full_prompt(tours_text, faq_context, history, text)
 
         llm = get_llm()
@@ -239,8 +277,16 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         raw_reply = response.content
 
         booking_data = _extract_booking(raw_reply)
-        escalation_reason = _extract_escalation(raw_reply)
+        extracted = _extract_escalation(raw_reply)
+        escalation_reason, escalation_context = extracted if extracted else (None, None)
+
+        if "===БРОНЬ" in raw_reply and not booking_data:
+            logger.warning("marker.parse_failed", marker_type="booking", snippet=raw_reply[-500:])
+        if "===МЕНЕДЖЕР" in raw_reply and not extracted:
+            logger.warning("marker.parse_failed", marker_type="escalation", snippet=raw_reply[-500:])
+
         clean_reply = _strip_markers(raw_reply)
+        clean_reply = check_output(clean_reply)
 
         if booking_data:
             try:
@@ -262,12 +308,13 @@ async def process_with_ai(sender_id: str, text: str) -> None:
             try:
                 notifier = TelegramNotifier()
                 await notifier.notify_manager(
-                    client_name=(booking_data or {}).get("name", "Не указано"),
-                    client_phone=(booking_data or {}).get("phone", "Не указан"),
-                    client_email=(booking_data or {}).get("email", "Не указан"),
-                    request_summary=escalation_reason,
-                    conversation_history=history[-20:],
-                    tag=escalation_reason,
+                    sender_id=sender_id,
+                    instagram_handle=instagram_handle,
+                    context=escalation_context,
+                    client_name=(booking_data or {}).get("name"),
+                    client_phone=(booking_data or {}).get("phone"),
+                    client_email=(booking_data or {}).get("email"),
+                    tag="Нужен звонок",
                 )
             except Exception:
                 logger.exception("escalation.notify_failed")

@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from httpx import AsyncClient
 from structlog import get_logger
 
@@ -8,35 +10,15 @@ logger = get_logger()
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
-MAX_HISTORY_LINES = 15
-
-
-def _escape_markdown(text: str | None) -> str:
-    if text is None:
-        return ""
-    special = r"\_*[]()~`>#+-=|{}.!"
-    for ch in special:
-        text = text.replace(ch, "\\" + ch)
-    return text
-
-
-def _format_conversation(history: list[dict]) -> str:
-    lines = []
-    for msg in history[-MAX_HISTORY_LINES:]:
-        role = msg.get("role", "user")
-        text = msg.get("text", msg.get("content", ""))[:300]
-        prefix = "🧑 Клиент" if role == "user" else "🤖 Агент"
-        lines.append(f"{prefix}: {_escape_markdown(text)}")
-    return "\n".join(lines) if lines else "_Нет сообщений_"
-
 
 def _build_notification_text(
-    client_name: str,
-    client_phone: str,
-    client_email: str,
-    request_summary: str,
-    conversation_history: list[dict],
-    tag: str,
+    sender_id: str,
+    instagram_handle: str | None = None,
+    context: str = "",
+    client_name: str | None = None,
+    client_phone: str | None = None,
+    client_email: str | None = None,
+    tag: str = "Нужен звонок",
 ) -> str:
     sheets_id = settings.google_requests_sheet_id
     sheets_link = (
@@ -45,20 +27,36 @@ def _build_notification_text(
         else "_не указан_"
     )
 
-    return (
-        "\U0001f535 *Новая эскалация / заявка*\n"
-        "\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\u2501\n\n"
-        "\U0001f464 *Клиент:*\n"
-        "   Имя: " + _escape_markdown(client_name) + "\n"
-        "   \U0001f4de Телефон: `" + _escape_markdown(client_phone) + "`\n"
-        "   \U0001f4e7 Email: " + _escape_markdown(client_email) + "\n\n"
-        "\U0001f4cb *Запрос:*\n" + _escape_markdown(request_summary) + "\n\n"
-        "\U0001f3f7 *Тег:* `" + _escape_markdown(tag) + "`\n\n"
-        "\U0001f4c4 *История переписки:*\n"
-        + _format_conversation(conversation_history)
-        + "\n\n"
-        "\U0001f517 *Google Sheets:* [Открыть заявки](" + sheets_link + ")"
-    )
+    handle = f"@{instagram_handle}" if instagram_handle else sender_id
+    now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+
+    lines = [
+        "\U0001f6a8 *Новая эскалация*",
+        "",
+        f"\U0001f464 *Клиент:* {handle}",
+        f"\U0001f550 {now}",
+        "",
+        "\U0001f4cb *Суть:*",
+        context,
+        "",
+    ]
+
+    contacts = []
+    if client_name:
+        contacts.append(f"\U0001f464 {client_name}")
+    if client_phone:
+        contacts.append(f"\U0001f4de {client_phone}")
+    if client_email:
+        contacts.append(f"\U0001f4e7 {client_email}")
+    if contacts:
+        lines.append("\U0001f4cb *Контакты:*")
+        lines.extend(contacts)
+        lines.append("")
+
+    lines.append(f"\U0001f3f7 *Тег:* `{tag}`")
+    lines.append(f"\U0001f517 *Google Sheets:* [Открыть заявки]({sheets_link})")
+
+    return "\n".join(lines)
 
 
 class TelegramNotifier:
@@ -68,11 +66,12 @@ class TelegramNotifier:
 
     async def notify_manager(
         self,
-        client_name: str,
-        client_phone: str,
-        client_email: str,
-        request_summary: str,
-        conversation_history: list[dict],
+        sender_id: str,
+        instagram_handle: str | None = None,
+        context: str = "",
+        client_name: str | None = None,
+        client_phone: str | None = None,
+        client_email: str | None = None,
         tag: str = "Нужен звонок",
     ) -> None:
         if not self._token or not self._chat_id:
@@ -81,11 +80,12 @@ class TelegramNotifier:
             )
 
         text = _build_notification_text(
+            sender_id=sender_id,
+            instagram_handle=instagram_handle,
+            context=context,
             client_name=client_name,
             client_phone=client_phone,
             client_email=client_email,
-            request_summary=request_summary,
-            conversation_history=conversation_history,
             tag=tag,
         )
 
@@ -108,7 +108,7 @@ class TelegramNotifier:
 
         logger.info(
             "telegram.notification.sent",
-            client_name=client_name,
+            sender_id=sender_id,
             tag=tag,
             chat_id=self._chat_id,
         )

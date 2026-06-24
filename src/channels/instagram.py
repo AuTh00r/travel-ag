@@ -17,6 +17,8 @@ class InstagramChannel(ChannelBase):
     """Канал Instagram Direct через Meta Graph API."""
 
     BASE_URL = "https://graph.facebook.com/v25.0"
+    _username_cache: dict[str, str] = {}
+    _USERNAME_CACHE_MAX = 500
 
     def verify_signature(self, raw_body: bytes, signature_header: str | None) -> bool:
         if not settings.instagram_app_secret:
@@ -126,6 +128,39 @@ class InstagramChannel(ChannelBase):
                 ) from exc
             except httpx.RequestError as exc:
                 raise InstagramError(f"Сетевая ошибка при отправке: {exc}") from exc
+
+    async def get_username(self, sender_id: str) -> str | None:
+        """Получить Instagram username пользователя.
+
+        Использует User Profile API: GET /{sender_id} ?fields=name,username
+        Результат кешируется in-memory (макс. 500 записей).
+        При ошибке API возвращает None без retry.
+        """
+        if sender_id in self._username_cache:
+            return self._username_cache[sender_id]
+
+        if not settings.instagram_access_token:
+            return None
+
+        url = f"https://graph.instagram.com/v25.0/{sender_id}"
+        params = {
+            "fields": "name,username",
+            "access_token": settings.instagram_access_token,
+        }
+        async with httpx.AsyncClient(timeout=10) as client:
+            try:
+                resp = await client.get(url, params=params)
+                resp.raise_for_status()
+                data = resp.json()
+                username = data.get("username") or data.get("name")
+                if username:
+                    self._username_cache[sender_id] = username
+                    if len(self._username_cache) > self._USERNAME_CACHE_MAX:
+                        self._username_cache.pop(next(iter(self._username_cache)))
+                    return username
+            except Exception:
+                logger.debug("instagram.get_username.failed", sender_id=sender_id)
+        return None
 
     async def handle_webhook(self, payload: dict) -> list[tuple[str, str]]:
         """Реализация абстрактного метода ChannelBase."""
