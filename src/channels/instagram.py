@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import re
 
 import httpx
 from fastapi import Response
@@ -91,12 +92,20 @@ class InstagramChannel(ChannelBase):
 
         max_len = 1000
         if len(text) > max_len:
+            urls = re.findall(r"https?://[^\s\n]+", text)
+            text = re.sub(r"https?://[^\s\n]+", "", text)
+            text = text.strip()[: max_len - 3] + "..."
+            for u in urls:
+                if len(text) + len(u) + 1 <= max_len:
+                    text += "\n" + u
+                else:
+                    break
             logger.warning(
                 "instagram.message.truncated",
                 original_len=len(text),
                 max_len=max_len,
+                urls_preserved=len(urls),
             )
-            text = text[: max_len - 3] + "..."
 
         url = f"{self.BASE_URL}/me/messages"
         params = {"access_token": settings.instagram_access_token}
