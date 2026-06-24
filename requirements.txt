@@ -30,6 +30,9 @@ python-dotenv>=1.0.0
 # Logging
 structlog>=24.0.0
 
+# DOCX parsing
+python-docx>=1.1.0
+
 # Dev / Lint
 ruff>=0.7.0
 black>=24.0.0

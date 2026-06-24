@@ -4,8 +4,6 @@ from pathlib import Path
 
 from structlog import get_logger
 
-from src.ai.states import DialogState
-
 logger = get_logger()
 
 DB_PATH = Path("data/sessions.db")
@@ -43,7 +41,7 @@ def _get_connection() -> sqlite3.Connection:
     return conn
 
 
-async def get_session(client_id: str) -> DialogState:
+async def get_session(client_id: str) -> dict:
     conn = _get_connection()
     row = conn.execute(
         "SELECT state FROM sessions WHERE client_id = ?", (client_id,)
@@ -55,27 +53,11 @@ async def get_session(client_id: str) -> DialogState:
     return _new_session(client_id)
 
 
-def _new_session(client_id: str) -> DialogState:
-    return {
-        "messages": [],
-        "client_id": client_id,
-        "client_name": None,
-        "client_phone": None,
-        "client_email": None,
-        "request_type": None,
-        "tour_params": {},
-        "found_tours": [],
-        "selected_tour": None,
-        "faq_answer": None,
-        "needs_escalation": False,
-        "escalation_reason": None,
-        "current_step": "greeting",
-        "awaiting_field": None,
-        "conversation_history": [],
-    }
+def _new_session(client_id: str) -> dict:
+    return {"history": [], "client_id": client_id}
 
 
-async def save_session(client_id: str, state: DialogState) -> None:
+async def save_session(client_id: str, state: dict) -> None:
     conn = _get_connection()
     conn.execute(
         """INSERT OR REPLACE INTO sessions (client_id, state, updated_at)

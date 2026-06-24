@@ -1,10 +1,10 @@
 import asyncio
+import re
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 from structlog import get_logger
 
@@ -12,6 +12,7 @@ from src.channels.instagram import InstagramChannel
 from src.db.sessions import (
     get_requests_by_client,
     get_session,
+    save_booking_request,
     save_session,
     update_request_status,
 )
@@ -48,6 +49,7 @@ _locks_lock = asyncio.Lock()
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     from src.db.faq_db import load_faq_to_chroma
+    from src.services.tour_loader import load_tours
 
     def _load_faq():
         try:
@@ -56,7 +58,17 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("faq.load_failed")
 
+    def _load_tours():
+        try:
+            tours_text = load_tours()
+            app.state.tours_text = tours_text
+            logger.info("tours.ready", chars=len(tours_text))
+        except Exception:
+            logger.exception("tours.load_failed")
+            app.state.tours_text = ""
+
     threading.Thread(target=_load_faq, daemon=True).start()
+    threading.Thread(target=_load_tours, daemon=True).start()
     yield
 
 
@@ -151,30 +163,123 @@ async def _get_lock(sender_id: str) -> asyncio.Lock:
         return _locks[sender_id]
 
 
+_BOOKING_RE = re.compile(
+    r"===БРОНЬ===\s*\n(.*?)\n===БРОНЬ===", re.DOTALL
+)
+_ESCALATION_RE = re.compile(
+    r"===МЕНЕДЖЕР===\s*\n(.*?)\n===МЕНЕДЖЕР===", re.DOTALL
+)
+
+
+def _extract_booking(text: str) -> dict | None:
+    m = _BOOKING_RE.search(text)
+    if not m:
+        return None
+    data = {}
+    for line in m.group(1).strip().split("\n"):
+        if ":" in line:
+            key, val = line.split(":", 1)
+            data[key.strip().lower()] = val.strip()
+    if not data.get("имя") or not data.get("телефон"):
+        return None
+    return {
+        "name": data.get("имя", ""),
+        "phone": data.get("телефон", ""),
+        "email": data.get("email", ""),
+        "tour": data.get("тур", ""),
+    }
+
+
+def _extract_escalation(text: str) -> str | None:
+    m = _ESCALATION_RE.search(text)
+    if not m:
+        return None
+    for line in m.group(1).strip().split("\n"):
+        if ":" in line:
+            key, val = line.split(":", 1)
+            if key.strip().lower() == "причина":
+                return val.strip()
+    return m.group(1).strip()
+
+
+def _strip_markers(text: str) -> str:
+    text = _BOOKING_RE.sub("", text)
+    text = _ESCALATION_RE.sub("", text)
+    return text.strip()
+
+
 async def process_with_ai(sender_id: str, text: str) -> None:
-    from src.ai.engine import build_graph
+    from src.ai.prompts import build_full_prompt
+    from src.db.faq_db import search_faq
+    from src.services.llm import get_llm
+    from src.services.telegram_notify import TelegramNotifier
+    from src.services.tour_loader import get_tours_text
 
     lock = await _get_lock(sender_id)
     async with lock:
         session = await get_session(sender_id)
-        prev_count = len(session["messages"])
-        session["messages"].append(HumanMessage(content=text))
+        history = session.get("history", [])
 
-        graph = build_graph()
-        result = await graph.ainvoke(session)
+        tours_text = get_tours_text()
 
-        for msg in result.get("messages", [])[prev_count:]:
-            if (
-                hasattr(msg, "content")
-                and msg.content
-                and not isinstance(msg, HumanMessage)
-            ):
-                try:
-                    await instagram.send_message(sender_id, msg.content)
-                except Exception:
-                    logger.exception("instagram.message.send_failed", sender_id=sender_id)
+        faq_context = ""
+        try:
+            relevant = await search_faq(text)
+            if relevant:
+                faq_context = "\n\n".join(
+                    e["document"] for e in relevant[:3]
+                )
+        except Exception:
+            logger.debug("faq.search_skipped")
 
-        await save_session(sender_id, result)
+        messages = build_full_prompt(tours_text, faq_context, history, text)
+
+        llm = get_llm()
+        response = await llm.ainvoke(messages)
+        raw_reply = response.content
+
+        booking_data = _extract_booking(raw_reply)
+        escalation_reason = _extract_escalation(raw_reply)
+        clean_reply = _strip_markers(raw_reply)
+
+        if booking_data:
+            try:
+                sheets = GoogleSheetsService()
+                await sheets.create_request(**booking_data)
+                logger.info("booking.created", **booking_data)
+            except Exception:
+                logger.exception("booking.create_failed")
+
+            try:
+                await save_booking_request(
+                    client_id=sender_id,
+                    **booking_data,
+                )
+            except Exception:
+                logger.exception("booking.db_save_failed")
+
+        if escalation_reason:
+            try:
+                notifier = TelegramNotifier()
+                await notifier.notify_manager(
+                    client_name=(booking_data or {}).get("name", "Не указано"),
+                    client_phone=(booking_data or {}).get("phone", "Не указан"),
+                    client_email=(booking_data or {}).get("email", "Не указан"),
+                    request_summary=escalation_reason,
+                    conversation_history=history[-20:],
+                    tag=escalation_reason,
+                )
+            except Exception:
+                logger.exception("escalation.notify_failed")
+
+        history.append({"role": "user", "content": text})
+        history.append({"role": "assistant", "content": clean_reply})
+        await save_session(sender_id, {"history": history})
+
+        try:
+            await instagram.send_message(sender_id, clean_reply)
+        except Exception:
+            logger.exception("instagram.message.send_failed", sender_id=sender_id)
 
 
 async def _process_safely(sender_id: str, text: str) -> None:

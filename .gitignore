@@ -31,3 +31,9 @@ Thumbs.db
 
 # Test artifacts
 test_out.json
+
+# Temp / dev files
+bot*.log
+nul
+bot.py
+_optimize_tours.py

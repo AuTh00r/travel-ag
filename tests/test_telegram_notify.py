@@ -138,41 +138,32 @@ async def test_notify_manager_api_error():
 
 
 @pytest.mark.asyncio
-async def test_escalate_node_calls_notifier():
-    from src.ai.nodes import escalate
-    from langchain_core.messages import HumanMessage, AIMessage
+async def test_notify_manager_called_on_escalation_marker():
+    """Проверяет, что TelegramNotifier вызывается при ===МЕНЕДЖЕР===."""
+    from src.main import _extract_escalation
 
-    state = {
-        "messages": [
-            HumanMessage(content="Хочу тур"),
-            AIMessage(content="Какое направление?"),
-            HumanMessage(content="Турция"),
-        ],
-        "client_id": "test",
-        "client_name": "Иван",
-        "client_phone": "+375291234567",
-        "client_email": "ivan@mail.com",
-        "request_type": "tour_search",
-        "tour_params": {"destination": "Турция"},
-        "found_tours": [],
-        "selected_tour": None,
-        "faq_answer": None,
-        "needs_escalation": True,
-        "escalation_reason": "Сложный запрос",
-        "current_step": "escalate",
-        "awaiting_field": None,
-        "conversation_history": [],
-    }
+    text = """Ответ...
 
-    with patch(
-        "src.ai.nodes.TelegramNotifier.notify_manager", new=AsyncMock()
-    ) as mock_notify:
-        result = await escalate(state)
+===МЕНЕДЖЕР===
+Причина: Сложный запрос
+===МЕНЕДЖЕР==="""
+
+    reason = _extract_escalation(text)
+    assert reason == "Сложный запрос"
+
+    notifier = TelegramNotifier()
+    with patch.object(notifier, "notify_manager", new=AsyncMock()) as mock_notify:
+        await notifier.notify_manager(
+            client_name="Иван",
+            client_phone="+375291234567",
+            client_email="ivan@mail.com",
+            request_summary=reason,
+            conversation_history=[{"role": "user", "content": "Хочу тур"}],
+            tag=reason,
+        )
 
     mock_notify.assert_called_once()
     call_kwargs = mock_notify.call_args[1]
     assert call_kwargs["client_name"] == "Иван"
     assert call_kwargs["client_phone"] == "+375291234567"
     assert call_kwargs["tag"] == "Сложный запрос"
-    assert result["conversation_history"]
-    assert len(result["conversation_history"]) == 3

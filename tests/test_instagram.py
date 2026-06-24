@@ -151,8 +151,8 @@ class TestWebhookReceive:
         assert mock_process.await_count == 1  # не вырос
 
     @patch("src.main._process_safely")
-    def test_no_mid_still_processed(self, mock_process):
-        """Сообщение без mid обрабатывается (нет возможности дедупить)."""
+    def test_no_mid_skipped(self, mock_process):
+        """Сообщение без mid пропускается (нет mid для дедупа)."""
         mock_process.return_value = None
         payload = {
             "entry": [
@@ -168,7 +168,7 @@ class TestWebhookReceive:
         }
         response = client.post("/webhook/instagram", json=payload)
         assert response.status_code == 200
-        mock_process.assert_awaited_once_with("12345", "Тест без mid")
+        mock_process.assert_not_awaited()
 
     def test_last_seen_updated_after_post(self):
         # Любой валидный POST обновляет last_seen (in-memory, глобально).
