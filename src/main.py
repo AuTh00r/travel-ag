@@ -284,10 +284,6 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         async with lock:
             session = await get_session(sender_id)
             if is_manager_active(session, settings.manager_takeover_ttl_minutes):
-                history = session.get("history", [])
-                history.append({"role": "user", "content": text})
-                session["history"] = history
-                await save_session(sender_id, session)
                 logger.info("manager.active.skip_llm", sender_id=sender_id)
                 return
 

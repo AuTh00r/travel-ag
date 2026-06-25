@@ -139,10 +139,7 @@ class TestManagerPauseGate:
 
         mock_llm.assert_not_called()
         mock_send.assert_not_called()
-        call_args = mock_save.call_args
-        assert call_args is not None
-        saved_session = call_args[0][1]
-        assert saved_session["history"][-1] == {"role": "user", "content": "хочу тур"}
+        mock_save.assert_not_called()
 
 
 class TestSplitReply:
