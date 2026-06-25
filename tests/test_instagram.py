@@ -204,16 +204,20 @@ class TestInstagramChannelSend:
     async def test_send_message_success(self, mock_client):
         from src.channels.instagram import InstagramChannel
 
+        InstagramChannel._sent_mids.clear()
         settings.instagram_access_token = "test_token"
 
         mock_response = AsyncMock()
         mock_response.raise_for_status = AsyncMock()
+        mock_response.json = Mock(return_value={"message_id": "mid_sent_1"})
         mock_client.return_value.__aenter__.return_value.post = AsyncMock(
             return_value=mock_response
         )
 
         channel = InstagramChannel()
-        await channel.send_message("12345", "Hello")
+        mid = await channel.send_message("12345", "Hello")
+        assert mid == "mid_sent_1"
+        assert "mid_sent_1" in InstagramChannel._sent_mids
 
         mock_client.return_value.__aenter__.return_value.post.assert_called_once()
 
@@ -323,3 +327,103 @@ class TestGetUsername:
         channel = InstagramChannel()
         result = await channel.get_username("12345")
         assert result is None
+
+
+class TestEchoClassification:
+    """InstagramChannel.receive_message — классификация эхо-сообщений."""
+
+    @pytest.mark.asyncio
+    async def test_human_manager_echo(self):
+        from src.channels.instagram import InstagramChannel
+
+        InstagramChannel._sent_mids.clear()
+        settings.instagram_app_id = ""
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "BUSINESS_ACC"},
+                    "recipient": {"id": "CLIENT_42"},
+                    "message": {
+                        "is_echo": True,
+                        "mid": "mid_human_1",
+                        "text": "Здравствуйте!",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert events == [
+            {"kind": "manager", "client_id": "CLIENT_42", "text": "Здравствуйте!", "mid": "mid_human_1"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_own_bot_echo_by_mid(self):
+        from src.channels.instagram import InstagramChannel
+
+        InstagramChannel._sent_mids.clear()
+        InstagramChannel._sent_mids.add("mid_bot_1")
+        settings.instagram_app_id = ""
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "BUSINESS_ACC"},
+                    "recipient": {"id": "CLIENT_42"},
+                    "message": {
+                        "is_echo": True,
+                        "mid": "mid_bot_1",
+                        "text": "Ваш ответ",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_own_bot_echo_by_app_id(self):
+        from src.channels.instagram import InstagramChannel
+
+        InstagramChannel._sent_mids.clear()
+        settings.instagram_app_id = "APP_X"
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "BUSINESS_ACC"},
+                    "recipient": {"id": "CLIENT_42"},
+                    "message": {
+                        "is_echo": True,
+                        "mid": "mid_unfamiliar",
+                        "app_id": "APP_X",
+                        "text": "Ваш ответ",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert events == []
+        settings.instagram_app_id = ""
+
+    @pytest.mark.asyncio
+    async def test_user_message_passthrough(self):
+        from src.channels.instagram import InstagramChannel
+
+        InstagramChannel._sent_mids.clear()
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_99"},
+                    "message": {
+                        "text": "Хочу тур",
+                        "mid": "mid_user_1",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert events == [
+            {"kind": "user", "sender_id": "CLIENT_99", "text": "Хочу тур", "mid": "mid_user_1"}
+        ]

@@ -111,3 +111,35 @@ async def test_update_status_not_found():
         )
 
     assert response.status_code == 404
+
+
+class TestManagerPauseGate:
+    """process_with_ai — пауза при активном менеджере."""
+
+    @pytest.mark.asyncio
+    async def test_skip_llm_when_manager_active(self):
+        from datetime import datetime, timezone
+
+        from src.main import process_with_ai
+
+        now_iso = datetime.now(timezone.utc).isoformat()
+        with (
+            patch("src.main.get_session") as mock_get,
+            patch("src.main.save_session", new=AsyncMock()) as mock_save,
+            patch("src.services.llm.get_llm") as mock_llm,
+            patch("src.channels.instagram.InstagramChannel.send_message", new=AsyncMock()) as mock_send,
+        ):
+            mock_get.return_value = {
+                "history": [],
+                "client_id": "CLIENT_42",
+                "escalation_count": 0,
+                "manager_last_at": now_iso,
+            }
+            await process_with_ai("CLIENT_42", "хочу тур")
+
+        mock_llm.assert_not_called()
+        mock_send.assert_not_called()
+        call_args = mock_save.call_args
+        assert call_args is not None
+        saved_session = call_args[0][1]
+        assert saved_session["history"][-1] == {"role": "user", "content": "хочу тур"}
