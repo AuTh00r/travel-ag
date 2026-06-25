@@ -142,7 +142,7 @@ class InstagramChannel(ChannelBase):
         if not settings.instagram_access_token:
             return None
 
-        url = f"https://graph.instagram.com/v25.0/{sender_id}"
+        url = f"{self.BASE_URL}/{sender_id}"
         params = {
             "fields": "name,username",
             "access_token": settings.instagram_access_token,
