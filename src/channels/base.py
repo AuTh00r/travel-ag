@@ -11,10 +11,10 @@ class ChannelBase(ABC):
     ...
 
     @abstractmethod
-    async def handle_webhook(self, payload: dict) -> list[tuple[str, str]]:
+    async def handle_webhook(self, payload: dict) -> list[dict]:
         """Обработать входящий webhook.
 
-        Возвращает список (sender_id, text) для каждого сообщения.
+        Возвращает список событий-словарей для каждого сообщения.
         """
 
     ...

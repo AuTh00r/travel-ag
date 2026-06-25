@@ -19,6 +19,8 @@ class InstagramChannel(ChannelBase):
     BASE_URL = "https://graph.facebook.com/v25.0"
     _username_cache: dict[str, str] = {}
     _USERNAME_CACHE_MAX = 500
+    _sent_mids: set[str] = set()
+    _SENT_MIDS_MAX = 10_000
 
     def verify_signature(self, raw_body: bytes, signature_header: str | None) -> bool:
         if not settings.instagram_app_secret:
@@ -59,33 +61,57 @@ class InstagramChannel(ChannelBase):
         logger.warning("instagram.webhook.verify_failed")
         return Response(status_code=403, content="Forbidden")
 
-    async def receive_message(self, payload: dict) -> list[tuple[str, str, str]]:
+    async def receive_message(self, payload: dict) -> list[dict]:
         """Разобрать входящий webhook от Instagram.
 
-        Возвращает список (sender_id, text, mid) для каждого сообщения.
-        Фильтрует echo-сообщения (собственные ответы бота) чтобы
-        избежать бесконечного цикла. mid нужен для дедупликации ретраев.
+        Возвращает список событий:
+          {"kind": "user",    "sender_id", "text", "mid"}  — сообщение клиента
+          {"kind": "manager", "client_id", "text", "mid"}  — живой менеджер ответил
+        Эхо собственных ответов бота отфильтровывается (is_own_message).
         """
-        messages: list[tuple[str, str, str]] = []
+        events: list[dict] = []
 
         for entry in payload.get("entry", []):
             for messaging in entry.get("messaging", []):
-                if messaging.get("message", {}).get("is_echo"):
-                    continue
-                sender_id = messaging.get("sender", {}).get("id")
                 message = messaging.get("message", {})
-                text = message.get("text", "")
                 mid = message.get("mid", "")
 
+                if message.get("is_echo"):
+                    app_id = message.get("app_id") or messaging.get("app_id")
+                    if self.is_own_message(mid, app_id):
+                        continue
+                    client_id = messaging.get("recipient", {}).get("id")
+                    if client_id:
+                        logger.info("instagram.manager.detected", client_id=client_id)
+                        events.append(
+                            {
+                                "kind": "manager",
+                                "client_id": client_id,
+                                "text": message.get("text", ""),
+                                "mid": mid,
+                            }
+                        )
+                    continue
+
+                sender_id = messaging.get("sender", {}).get("id")
+                text = message.get("text", "")
                 if sender_id and text:
                     logger.info("instagram.message.received", sender_id=sender_id)
-                    messages.append((sender_id, text, mid))
+                    events.append(
+                        {
+                            "kind": "user",
+                            "sender_id": sender_id,
+                            "text": text,
+                            "mid": mid,
+                        }
+                    )
 
-        return messages
+        return events
 
-    async def send_message(self, recipient_id: str, text: str) -> None:
+    async def send_message(self, recipient_id: str, text: str) -> str | None:
         """Отправить текстовое сообщение через Instagram Graph API.
 
+        Возвращает message_id, если API вернул, иначе None.
         Instagram DM лимит — 1000 символов. Если длиннее — обрезаем.
         """
 
@@ -121,13 +147,32 @@ class InstagramChannel(ChannelBase):
             try:
                 response = await client.post(url, params=params, json=payload)
                 response.raise_for_status()
+                mid = None
+                try:
+                    data = response.json()
+                    if isinstance(data, dict):
+                        mid = data.get("message_id")
+                except Exception:
+                    mid = None
+                if mid:
+                    self._sent_mids.add(mid)
+                    if len(self._sent_mids) > self._SENT_MIDS_MAX:
+                        for _ in range(len(self._sent_mids) - self._SENT_MIDS_MAX):
+                            self._sent_mids.pop()
                 logger.info("instagram.message.sent", recipient_id=recipient_id)
+                return mid
             except httpx.HTTPStatusError as exc:
                 raise InstagramError(
                     f"Ошибка отправки сообщения: {exc.response.status_code} {exc.response.text}"
                 ) from exc
             except httpx.RequestError as exc:
                 raise InstagramError(f"Сетевая ошибка при отправке: {exc}") from exc
+
+    def is_own_message(self, mid: str, app_id: str | None = None) -> bool:
+        """Эхо отправлено самим ботом (а не живым менеджером)?"""
+        if app_id and settings.instagram_app_id and str(app_id) == settings.instagram_app_id:
+            return True
+        return bool(mid) and mid in self._sent_mids
 
     async def get_username(self, sender_id: str) -> str | None:
         """Получить Instagram username пользователя.
@@ -162,6 +207,6 @@ class InstagramChannel(ChannelBase):
                 logger.debug("instagram.get_username.failed", sender_id=sender_id)
         return None
 
-    async def handle_webhook(self, payload: dict) -> list[tuple[str, str]]:
+    async def handle_webhook(self, payload: dict) -> list[dict]:
         """Реализация абстрактного метода ChannelBase."""
         return await self.receive_message(payload)
