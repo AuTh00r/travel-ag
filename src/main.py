@@ -339,10 +339,12 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         clean_reply = _strip_markers(raw_reply)
         clean_reply = check_output(clean_reply)
 
+        booking_created = False
         if booking_data:
             try:
                 sheets = GoogleSheetsService()
                 await sheets.create_request(**booking_data)
+                booking_created = True
                 logger.info("booking.created", **booking_data)
             except Exception:
                 logger.exception("booking.create_failed")
@@ -354,6 +356,20 @@ async def process_with_ai(sender_id: str, text: str) -> None:
                 )
             except Exception:
                 logger.exception("booking.db_save_failed")
+
+        if booking_created:
+            try:
+                notifier = TelegramNotifier()
+                await notifier.notify_booking(
+                    sender_id=sender_id,
+                    instagram_handle=instagram_handle,
+                    client_name=booking_data.get("name"),
+                    client_phone=booking_data.get("phone"),
+                    client_email=booking_data.get("email"),
+                    tour=booking_data.get("tour", ""),
+                )
+            except Exception:
+                logger.exception("booking.notify_failed")
 
         if escalation_reason:
             if escalation_count >= 3:

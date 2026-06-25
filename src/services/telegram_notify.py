@@ -112,3 +112,70 @@ class TelegramNotifier:
             tag=tag,
             chat_id=self._chat_id,
         )
+
+    async def notify_booking(
+        self,
+        sender_id: str,
+        instagram_handle: str | None = None,
+        client_name: str | None = None,
+        client_phone: str | None = None,
+        client_email: str | None = None,
+        tour: str = "",
+    ) -> None:
+        if not self._token or not self._chat_id:
+            raise TelegramError(
+                "TELEGRAM_BOT_TOKEN или TELEGRAM_MANAGER_CHAT_ID не настроены"
+            )
+
+        handle = f"@{instagram_handle}" if instagram_handle else sender_id
+        now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+
+        lines = [
+            "\U0001f4e9 *Новая бронь*",
+            "",
+            f"\U0001f464 *Клиент:* {handle}",
+            f"\U0001f550 {now}",
+            "",
+        ]
+        if tour:
+            lines.append(f"\U0001f399 *Тур:* {tour}")
+        if client_name:
+            lines.append(f"\U0001f464 *Имя:* {client_name}")
+        if client_phone:
+            lines.append(f"\U0001f4de *Телефон:* {client_phone}")
+        if client_email:
+            lines.append(f"\U0001f4e7 *Email:* {client_email}")
+
+        sheets_id = settings.google_requests_sheet_id
+        sheets_link = (
+            f"https://docs.google.com/spreadsheets/d/{sheets_id}"
+            if sheets_id
+            else "_не указан_"
+        )
+        lines.append("")
+        lines.append(f"\U0001f517 *Google Sheets:* [Открыть заявки]({sheets_link})")
+
+        text = "\n".join(lines)
+        url = TELEGRAM_API_URL.format(token=self._token)
+
+        async with AsyncClient(timeout=15) as client:
+            response = await client.post(
+                url,
+                json={
+                    "chat_id": self._chat_id,
+                    "text": text,
+                    "parse_mode": "Markdown",
+                },
+            )
+
+        if response.status_code != 200:
+            raise TelegramError(
+                f"Telegram API error: {response.status_code} {response.text}"
+            )
+
+        logger.info(
+            "telegram.booking_notification.sent",
+            sender_id=sender_id,
+            tour=tour,
+            chat_id=self._chat_id,
+        )
