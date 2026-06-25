@@ -270,7 +270,8 @@ async def process_with_ai(sender_id: str, text: str) -> None:
 
         instagram_handle = await instagram.get_username(sender_id)
 
-        messages = build_full_prompt(tours_text, faq_context, history, text)
+        escalation_count = session.get("escalation_count", 0)
+        messages = build_full_prompt(tours_text, faq_context, history, text, escalation_count)
 
         llm = get_llm()
         response = await llm.ainvoke(messages)
@@ -305,23 +306,29 @@ async def process_with_ai(sender_id: str, text: str) -> None:
                 logger.exception("booking.db_save_failed")
 
         if escalation_reason:
-            try:
-                notifier = TelegramNotifier()
-                await notifier.notify_manager(
-                    sender_id=sender_id,
-                    instagram_handle=instagram_handle,
-                    context=escalation_context,
-                    client_name=(booking_data or {}).get("name"),
-                    client_phone=(booking_data or {}).get("phone"),
-                    client_email=(booking_data or {}).get("email"),
-                    tag="Нужен звонок",
-                )
-            except Exception:
-                logger.exception("escalation.notify_failed")
+            if escalation_count >= 3:
+                logger.info("escalation.limit_reached", sender_id=sender_id, count=escalation_count)
+            else:
+                try:
+                    notifier = TelegramNotifier()
+                    await notifier.notify_manager(
+                        sender_id=sender_id,
+                        instagram_handle=instagram_handle,
+                        context=escalation_context,
+                        client_name=(booking_data or {}).get("name"),
+                        client_phone=(booking_data or {}).get("phone"),
+                        client_email=(booking_data or {}).get("email"),
+                        tag="Нужен звонок",
+                    )
+                    escalation_count += 1
+                except Exception:
+                    logger.exception("escalation.notify_failed")
 
         history.append({"role": "user", "content": text})
         history.append({"role": "assistant", "content": clean_reply})
-        await save_session(sender_id, {"history": history})
+        session["history"] = history
+        session["escalation_count"] = escalation_count
+        await save_session(sender_id, session)
 
         try:
             await instagram.send_message(sender_id, clean_reply)

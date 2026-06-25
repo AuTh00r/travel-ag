@@ -54,7 +54,7 @@ async def get_session(client_id: str) -> dict:
 
 
 def _new_session(client_id: str) -> dict:
-    return {"history": [], "client_id": client_id}
+    return {"history": [], "client_id": client_id, "escalation_count": 0}
 
 
 async def save_session(client_id: str, state: dict) -> None:

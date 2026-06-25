@@ -9,9 +9,10 @@ def build_full_prompt(
     faq_context: str,
     history: list[dict],
     message: str,
+    escalation_count: int = 0,
     current_date: date_type | None = None,
 ) -> list[SystemMessage | HumanMessage | AIMessage]:
-    system = _build_system(tours_text, faq_context, current_date)
+    system = _build_system(tours_text, faq_context, escalation_count, current_date)
     messages: list[SystemMessage | HumanMessage | AIMessage] = [
         SystemMessage(content=system)
     ]
@@ -25,7 +26,7 @@ def build_full_prompt(
 
 
 def _build_system(
-    tours_text: str, faq_context: str, current_date: date_type | None = None
+    tours_text: str, faq_context: str, escalation_count: int = 0, current_date: date_type | None = None
 ) -> str:
     today = (current_date or date_type.today()).strftime("%d.%m.%Y")
     parts = [
@@ -40,7 +41,10 @@ def _build_system(
         parts.append(_FAQ_HEADER + faq_context)
 
     parts.append(_ACTION_INSTRUCTIONS)
-    parts.append(_ESCALATION_RULES)
+    if escalation_count < 3:
+        parts.append(_ESCALATION_RULES)
+    else:
+        parts.append(_ESCALATION_LIMIT_REACHED)
 
     return "\n\n".join(parts)
 
@@ -111,3 +115,12 @@ _ESCALATION_RULES = """━━━━━━━━━━━━━━━━━━━
 ===МЕНЕДЖЕР===
 
 Заполни ОБА поля. Блок эскалации НЕ считается в лимит символов — добавляй всегда, когда нужно."""
+
+
+_ESCALATION_LIMIT_REACHED = """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ЭСКАЛАЦИЯ МЕНЕДЖЕРУ (ЛИМИТ ИСЧЕРПАН)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Ты уже передавал этого клиента менеджеру 3 раза. Больше эскалаций не нужно.
+Если клиент снова просит менеджера — просто скажи: «Ваш запрос уже передан менеджеру, ожидайте, пожалуйста. Он свяжется с вами в ближайшее время.'
+НЕ добавляй блок ===МЕНЕДЖЕР===."""
