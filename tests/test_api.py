@@ -190,3 +190,46 @@ class TestSplitReply:
         text = "A" * 1001
         chunks = _split_reply(text, max_len=1000)
         assert len(chunks) >= 2
+
+
+@pytest.mark.asyncio
+async def test_reset_takeover():
+    from datetime import datetime, timezone
+
+    from src.config import settings
+    from src.db.sessions import _new_session, save_session
+    from src.main import app
+
+    client_id = "test_reset_client"
+    session = _new_session(client_id)
+    session["manager_last_at"] = datetime.now(timezone.utc).isoformat()
+    await save_session(client_id, session)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(f"/api/admin/reset-takeover/{client_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reset"] is True
+
+    from src.db.sessions import get_session
+
+    updated = await get_session(client_id)
+    assert updated["manager_last_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_reset_takeover_already_active():
+    from src.db.sessions import _new_session, save_session, get_session
+    from src.main import app
+
+    client_id = "test_already_active"
+    await save_session(client_id, _new_session(client_id))
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(f"/api/admin/reset-takeover/{client_id}")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["reset"] is False
+    assert data["reason"] == "already_active"

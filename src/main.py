@@ -135,6 +135,22 @@ async def update_request_status_endpoint(client_id: str, body: StatusUpdateReque
     return {"client_id": client_id, "status": body.status, "updated": True}
 
 
+@app.post("/api/admin/reset-takeover/{client_id}")
+async def reset_takeover(client_id: str):
+    """Сбросить паузу бота для клиента — бот снова отвечает."""
+    try:
+        session = await get_session(client_id)
+        if session.get("manager_last_at") is None:
+            return {"client_id": client_id, "reset": False, "reason": "already_active"}
+        session["manager_last_at"] = None
+        await save_session(client_id, session)
+        logger.info("admin.reset_takeover", client_id=client_id)
+        return {"client_id": client_id, "reset": True}
+    except Exception:
+        logger.exception("admin.reset_takeover.failed", client_id=client_id)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.get("/webhook/instagram")
 async def verify_instagram_webhook(
     hub_mode: str | None = Query(None, alias="hub.mode"),
