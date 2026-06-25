@@ -193,7 +193,6 @@ class TestSplitReply:
 async def test_reset_takeover():
     from datetime import datetime, timezone
 
-    from src.config import settings
     from src.db.sessions import _new_session, save_session
     from src.main import app
 
@@ -217,7 +216,7 @@ async def test_reset_takeover():
 
 @pytest.mark.asyncio
 async def test_reset_takeover_already_active():
-    from src.db.sessions import _new_session, save_session, get_session
+    from src.db.sessions import _new_session, save_session
     from src.main import app
 
     client_id = "test_already_active"
