@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     instagram_verify_token: str = ""
     instagram_page_id: str = ""
     instagram_ig_user_id: str = ""
+    instagram_app_id: str = ""  # для распознавания собственных эхо (опционально)
 
     # Google Sheets
     google_sheets_credentials_file: str = "credentials.json"
@@ -37,6 +38,10 @@ class Settings(BaseSettings):
     # Security
     max_message_length: int = 1000
     max_messages_per_minute: int = 5
+
+    # Пауза бота при вмешательстве живого менеджера
+    # Сколько бот молчит в чате после последней реплики менеджера. 10080 = 7 дней.
+    manager_takeover_ttl_minutes: int = 10080
 
     # Настройки сервера
     log_level: str = "INFO"
