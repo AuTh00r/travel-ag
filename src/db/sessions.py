@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 
 from structlog import get_logger
@@ -54,7 +55,12 @@ async def get_session(client_id: str) -> dict:
 
 
 def _new_session(client_id: str) -> dict:
-    return {"history": [], "client_id": client_id, "escalation_count": 0}
+    return {
+        "history": [],
+        "client_id": client_id,
+        "escalation_count": 0,
+        "manager_last_at": None,
+    }
 
 
 async def save_session(client_id: str, state: dict) -> None:
@@ -67,6 +73,21 @@ async def save_session(client_id: str, state: dict) -> None:
     conn.commit()
     conn.close()
     logger.debug("session.saved", client_id=client_id)
+
+
+def is_manager_active(session: dict, ttl_minutes: int) -> bool:
+    """True, если живой менеджер недавно (в пределах TTL) писал в этот чат."""
+    last = session.get("manager_last_at")
+    if not last:
+        return False
+    try:
+        ts = datetime.fromisoformat(last)
+    except (ValueError, TypeError):
+        return False
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    age_minutes = (datetime.now(timezone.utc) - ts).total_seconds() / 60
+    return age_minutes < ttl_minutes
 
 
 async def save_booking_request(
