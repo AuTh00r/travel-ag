@@ -9,9 +9,11 @@ from pydantic import BaseModel
 from structlog import get_logger
 
 from src.channels.instagram import InstagramChannel
+from src.config import settings
 from src.db.sessions import (
     get_requests_by_client,
     get_session,
+    is_manager_active,
     save_booking_request,
     save_session,
     update_request_status,
@@ -237,6 +239,20 @@ async def process_with_ai(sender_id: str, text: str) -> None:
     from src.services.telegram_notify import TelegramNotifier
     from src.services.tour_loader import get_tours_text
 
+    # Пауза: если живой менеджер недавно писал в этот чат — бот молчит.
+    pre = await get_session(sender_id)
+    if is_manager_active(pre, settings.manager_takeover_ttl_minutes):
+        lock = await _get_lock(sender_id)
+        async with lock:
+            session = await get_session(sender_id)
+            if is_manager_active(session, settings.manager_takeover_ttl_minutes):
+                history = session.get("history", [])
+                history.append({"role": "user", "content": text})
+                session["history"] = history
+                await save_session(sender_id, session)
+                logger.info("manager.active.skip_llm", sender_id=sender_id)
+                return
+
     if is_rate_limited(sender_id):
         logger.warning("guard.rate_limited", sender_id=sender_id)
         await instagram.send_message(
@@ -336,6 +352,23 @@ async def process_with_ai(sender_id: str, text: str) -> None:
             logger.exception("instagram.message.send_failed", sender_id=sender_id)
 
 
+async def _mark_manager_active(client_id: str, manager_text: str) -> None:
+    """Живой менеджер ответил клиенту — ставим/продлеваем паузу бота."""
+    try:
+        lock = await _get_lock(client_id)
+        async with lock:
+            session = await get_session(client_id)
+            session["manager_last_at"] = datetime.now(timezone.utc).isoformat()
+            if manager_text:
+                history = session.get("history", [])
+                history.append({"role": "assistant", "content": manager_text})
+                session["history"] = history
+            await save_session(client_id, session)
+        logger.info("manager.takeover", client_id=client_id)
+    except Exception:
+        logger.exception("manager.takeover.failed", client_id=client_id)
+
+
 async def _process_safely(sender_id: str, text: str) -> None:
     """Фоновая обработка сообщения.
 
@@ -371,31 +404,32 @@ async def receive_instagram_message(request: Request):
         return Response(status_code=403, content="Invalid signature")
 
     payload = await request.json()
-    messages = await instagram.receive_message(payload)
-    logger.info("instagram.webhook.received", messages=len(messages))
+    events = await instagram.receive_message(payload)
+    logger.info("instagram.webhook.received", events=len(events))
 
     # Запускаем обработку в фоне и отвечаем Meta 200 мгновенно.
-    # Meta ретраит вебхук, если не получает 200 за несколько секунд;
-    # LLM-обработка занимает ~50 сек, поэтому отвечать ДО неё критично.
-    for sender_id, text, mid in messages:
+    for ev in events:
+        mid = ev.get("mid", "")
         if mid:
             if mid in _processed_mids:
                 logger.info("instagram.webhook.dedup_skipped", mid=mid)
                 continue
             _processed_mids.add(mid)
-            # Лимитируем размер сета чтобы не утечь по памяти.
             if len(_processed_mids) > _PROCESSED_MIDS_MAX:
-                # Удаляем самые старые записи (set не упорядочен, но
-                # для дедупа достаточно приблизительной очистки).
                 excess = len(_processed_mids) - _PROCESSED_MIDS_MAX
                 for _ in range(excess):
                     _processed_mids.pop()
         else:
-            # Без mid не можем дедуплицировать — пропускаем.
-            logger.warning("instagram.message.no_mid", sender_id=sender_id)
+            logger.warning("instagram.message.no_mid", kind=ev.get("kind"))
             continue
-        logger.info("instagram.message.processing", sender_id=sender_id)
-        task = asyncio.create_task(_process_safely(sender_id, text))
+
+        if ev["kind"] == "manager":
+            task = asyncio.create_task(
+                _mark_manager_active(ev["client_id"], ev.get("text", ""))
+            )
+        else:  # "user"
+            logger.info("instagram.message.processing", sender_id=ev["sender_id"])
+            task = asyncio.create_task(_process_safely(ev["sender_id"], ev["text"]))
         _background_tasks.add(task)
         task.add_done_callback(_background_tasks.discard)
 
