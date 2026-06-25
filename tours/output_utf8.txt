@@ -1,0 +1,75 @@
+Scanning 5 .docx files in D:\projects\travel-agent-bot\tours
+======================================================================
+
+======================================================================
+FILE: Болгария_От_Дуная_до_Босфора_сокращено.docx
+======================================================================
+
+  [1] URL in paragraph text:      YES
+       -> https://docs.google.com/document/d/19ehBDjx5uBRQ1l29z2eo2RrIPEJ1GcLu
+  [2] URL in table cells:         NO
+  [3] Hyperlink relationships:    NO
+
+  [4] Context around PODROBNAYA INFO / SSYLKA NA TUR:
+       Para #49: ПОДРОБНАЯ ИНФОРМАЦИЯ И БРОНИРОВАНИЕ НА САЙТЕ
+
+  >>> SUMMARY: URL / HYPERLINK FOUND <<<
+
+======================================================================
+FILE: Варшава_Берлин_Познань_сокращено.docx
+======================================================================
+
+  [1] URL in paragraph text:      YES
+       -> https://docs.google.com/document/d/1uRCkh-Nxzh77WiXLI8xR13QvtK78UFxk
+  [2] URL in table cells:         NO
+  [3] Hyperlink relationships:    NO
+
+  [4] Context around PODROBNAYA INFO / SSYLKA NA TUR:
+       Para #28: ПОДРОБНАЯ ИНФОРМАЦИЯ И БРОНИРОВАНИЕ НА САЙТЕ
+
+  >>> SUMMARY: URL / HYPERLINK FOUND <<<
+
+======================================================================
+FILE: ВДП (Варшава, Дрезден, Прага) сокращено.docx
+======================================================================
+
+  [1] URL in paragraph text:      YES
+       -> https://docs.google.com/document/d/1lTRwVKT-p1yqc10fqlvWPlKrcgFKWWgx
+  [2] URL in table cells:         NO
+  [3] Hyperlink relationships:    YES
+       -> https://docs.google.com/document/d/1lTRwVKT-p1yqc10fqlvWPlKrcgFKWWgx
+
+  [4] Context around PODROBNAYA INFO / SSYLKA NA TUR:
+       Para #34: ПОДРОБНАЯ ИНФОРМАЦИЯ И БРОНИРОВАНИЕ НА САЙТЕ
+
+  >>> SUMMARY: URL / HYPERLINK FOUND <<<
+
+======================================================================
+FILE: Франция_и_ее_соседи_сокращено.docx
+======================================================================
+
+  [1] URL in paragraph text:      YES
+       -> https://docs.google.com/document/d/1RjVa84RkqtBNBxeerJxPBuRuLB1vP5iv
+  [2] URL in table cells:         NO
+  [3] Hyperlink relationships:    NO
+
+  [4] Context around PODROBNAYA INFO / SSYLKA NA TUR:
+       Para #47: ПОДРОБНАЯ ИНФОРМАЦИЯ И БРОНИРОВАНИЕ НА САЙТЕ
+
+  >>> SUMMARY: URL / HYPERLINK FOUND <<<
+
+======================================================================
+FILE: Французский_поцелуй_сокращено.docx
+======================================================================
+
+  [1] URL in paragraph text:      YES
+       -> https://docs.google.com/document/d/17Cm7NHX8Y_zux1G8lnVta9KAx2a4mNd5
+  [2] URL in table cells:         NO
+  [3] Hyperlink relationships:    NO
+
+  [4] Context around PODROBNAYA INFO / SSYLKA NA TUR:
+       Para #29: Ссылка на тур: https://docs.google.com/document/d/17Cm7NHX8Y_zux1G8lnVta9KAx2a4mNd5
+
+  >>> SUMMARY: URL / HYPERLINK FOUND <<<
+
+Done.

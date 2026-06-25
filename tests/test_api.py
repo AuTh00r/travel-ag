@@ -143,3 +143,50 @@ class TestManagerPauseGate:
         assert call_args is not None
         saved_session = call_args[0][1]
         assert saved_session["history"][-1] == {"role": "user", "content": "хочу тур"}
+
+
+class TestSplitReply:
+    """_split_reply — разбивка длинных ответов."""
+
+    def test_short_text_single_chunk(self):
+        from src.main import _split_reply
+
+        assert _split_reply("Привет!") == ["Привет!"]
+
+    def test_long_text_splits_by_sentence(self):
+        from src.main import _split_reply
+
+        text = "Тур первый. " * 50  # ~650 chars
+        chunks = _split_reply(text, max_len=300)
+        assert len(chunks) >= 2
+        for c in chunks:
+            assert len(c) <= 300
+        assert "Тур первый." in chunks[0]
+
+    def test_no_sentence_boundary_splits_at_max(self):
+        from src.main import _split_reply
+
+        text = "а" * 500 + "б" * 500 + "в" * 500
+        chunks = _split_reply(text, max_len=600)
+        assert len(chunks) >= 2
+        for c in chunks:
+            assert len(c) <= 600
+
+    def test_empty_text(self):
+        from src.main import _split_reply
+
+        assert _split_reply("") == [""]
+        assert _split_reply("   ") == ["   "]
+
+    def test_exact_boundary_no_split(self):
+        from src.main import _split_reply
+
+        text = "A" * 1000
+        assert _split_reply(text, max_len=1000) == [text]
+
+    def test_one_char_over_splits(self):
+        from src.main import _split_reply
+
+        text = "A" * 1001
+        chunks = _split_reply(text, max_len=1000)
+        assert len(chunks) >= 2

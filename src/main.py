@@ -223,6 +223,28 @@ def _strip_markers(text: str) -> str:
     return text.strip()
 
 
+def _split_reply(text: str, max_len: int = 1000) -> list[str]:
+    """Разбить ответ на части по границам предложений."""
+    if len(text) <= max_len:
+        return [text]
+
+    chunks: list[str] = []
+    while len(text) > max_len:
+        candidate = text[:max_len]
+        split_at = -1
+        for sep in (". ", "! ", "? ", "\n\n", "\n"):
+            pos = candidate.rfind(sep)
+            if pos > split_at:
+                split_at = pos + len(sep)
+        if split_at <= 0:
+            split_at = max_len
+        chunks.append(text[:split_at].strip())
+        text = text[split_at:].strip()
+    if text:
+        chunks.append(text)
+    return chunks
+
+
 def _guard_reply(reason: str) -> str:
     replies = {
         "too_long": "Сообщение слишком длинное. Напишите покороче — я обязательно помогу 😊",
@@ -346,10 +368,12 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         session["escalation_count"] = escalation_count
         await save_session(sender_id, session)
 
-        try:
-            await instagram.send_message(sender_id, clean_reply)
-        except Exception:
-            logger.exception("instagram.message.send_failed", sender_id=sender_id)
+        for chunk in _split_reply(clean_reply):
+            try:
+                await instagram.send_message(sender_id, chunk)
+            except Exception:
+                logger.exception("instagram.message.send_failed", sender_id=sender_id)
+                break
 
 
 async def _mark_manager_active(client_id: str, manager_text: str) -> None:

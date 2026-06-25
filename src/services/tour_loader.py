@@ -1,4 +1,5 @@
 import os
+import re
 
 from docx import Document
 from structlog import get_logger
@@ -7,6 +8,42 @@ logger = get_logger()
 
 _tours_text: str = ""
 _tours_folder: str = "tours"
+
+_URL_RE = re.compile(r"https?://docs\.google\.com\S+")
+_KEY_FIELDS = ("Маршрут:", "Даты:", "Стоимость:", "Тип отдыха:", "Виза:")
+
+
+def _extract_tour_section(filename: str, paragraphs: list[str]) -> str:
+    text = "\n".join(paragraphs)
+
+    url_match = _URL_RE.search(text)
+    tour_url = url_match.group(0) if url_match else ""
+    if tour_url:
+        text = _URL_RE.sub("", text).strip()
+
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = text.replace("ПОДРОБНАЯ ИНФОРМАЦИЯ И БРОНИРОВАНИЕ НА САЙТЕ", "").strip()
+
+    key_lines = []
+    other_lines = []
+    for line in text.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        if any(line.startswith(f) for f in _KEY_FIELDS):
+            key_lines.append(line)
+        else:
+            other_lines.append(line)
+
+    parts = [f"=== ТУР: {filename} ==="]
+    if tour_url:
+        parts.append(f"Ссылка на тур: {tour_url}")
+    parts.extend(key_lines)
+    if other_lines:
+        parts.append("")
+        parts.extend(other_lines)
+
+    return "\n".join(parts)
 
 
 def load_tours(folder_path: str | None = None) -> str:
@@ -19,9 +56,10 @@ def load_tours(folder_path: str | None = None) -> str:
             continue
         filepath = os.path.join(path, filename)
         doc = Document(filepath)
-        text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
         tour_name = filename.replace(".docx", "")
-        all_tours.append(f"=== ТУР: {tour_name} ===\n{text}")
+        section = _extract_tour_section(tour_name, paragraphs)
+        all_tours.append(section)
         logger.info("tour_loader.loaded", file=filename)
 
     _tours_text = "\n\n".join(all_tours)
