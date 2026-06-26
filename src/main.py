@@ -484,7 +484,7 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
                     )
                 client_reply = (
                     "Не вижу вложение/пост/историю в чате, "
-                    "поэтому передала вопрос менеджеру 🙌\n"
+                    "поэтому передали вопрос менеджеру 🙌\n"
                     "Он посмотрит и поможет."
                 )
             else:
