@@ -11,6 +11,11 @@ logger = get_logger()
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
+def _escape_md(text: str) -> str:
+    """Escape Markdown special characters in user-provided text."""
+    return text.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
+
+
 def _build_notification_text(
     sender_id: str,
     instagram_handle: str | None = None,
@@ -30,6 +35,8 @@ def _build_notification_text(
     handle = f"@{instagram_handle}" if instagram_handle else sender_id
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
 
+    escaped_context = _escape_md(context)
+
     lines = [
         "\U0001f6a8 *Новая эскалация*",
         "",
@@ -37,7 +44,7 @@ def _build_notification_text(
         f"\U0001f550 {now}",
         "",
         "\U0001f4cb *Суть:*",
-        context,
+        escaped_context,
         "",
     ]
 
