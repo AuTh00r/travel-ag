@@ -421,6 +421,107 @@ async def _mark_manager_active(client_id: str, manager_text: str) -> None:
         logger.exception("manager.takeover.failed", client_id=client_id)
 
 
+async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) -> None:
+    """Обработка non-text сообщения (вложение, shared post, story reply).
+
+    Не вызывает LLM. Передаёт информацию менеджеру через Telegram
+    и отвечает клиенту acknowledgement.
+    """
+    try:
+        from src.services.telegram_notify import TelegramNotifier
+
+        # 1. Manager takeover gate
+        pre = await get_session(sender_id)
+        if is_manager_active(pre, settings.manager_takeover_ttl_minutes):
+            lock = await _get_lock(sender_id)
+            async with lock:
+                session = await get_session(sender_id)
+                if is_manager_active(session, settings.manager_takeover_ttl_minutes):
+                    logger.info("manager.active.skip_non_text", sender_id=sender_id)
+                    return
+
+        # 2. Per-user lock + перечитать session
+        lock = await _get_lock(sender_id)
+        async with lock:
+            session = await get_session(sender_id)
+
+            # 3. Получить instagram handle
+            instagram_handle = await instagram.get_username(sender_id)
+
+            # 4. Текущий лимит эскалаций
+            escalation_count = session.get("escalation_count", 0)
+            summary = metadata.get("summary", "неизвестный тип")
+
+            if escalation_count < 3:
+                context_msg = (
+                    f"Клиент отправил не текстовое сообщение в Instagram.\n"
+                    f"Тип: {summary}\n"
+                    f"Текст клиента: {text or 'без текста'}\n"
+                    f"Бот не видит содержимое вложения/поста/истории."
+                )
+                try:
+                    notifier = TelegramNotifier()
+                    await notifier.notify_manager(
+                        sender_id=sender_id,
+                        instagram_handle=instagram_handle,
+                        context=context_msg,
+                        tag="Non-text",
+                    )
+                    escalation_count += 1
+                    logger.info(
+                        "instagram.non_text.escalated",
+                        sender_id=sender_id,
+                        types=metadata.get("types"),
+                    )
+                except Exception:
+                    logger.exception(
+                        "instagram.non_text.notify_failed",
+                        sender_id=sender_id,
+                    )
+                client_reply = (
+                    "Не вижу вложение/пост/историю в чате, "
+                    "поэтому передала вопрос менеджеру 🙌\n"
+                    "Он посмотрит и поможет."
+                )
+            else:
+                logger.info(
+                    "instagram.non_text.escalation_skipped_limit",
+                    sender_id=sender_id,
+                    count=escalation_count,
+                )
+                client_reply = (
+                    "Ваш запрос уже передан менеджеру, "
+                    "ожидайте, пожалуйста. Он свяжется с вами в ближайшее время."
+                )
+
+            # 5. Сохранить историю
+            history = session.get("history", [])
+            history.append(
+                {
+                    "role": "user",
+                    "content": f"[Instagram non-text] {summary}. "
+                    f"Текст клиента: {text or 'без текста'}",
+                }
+            )
+            history.append({"role": "assistant", "content": client_reply})
+            session["history"] = history
+            session["escalation_count"] = escalation_count
+            await save_session(sender_id, session)
+
+            # 6. Ответить клиенту
+            await instagram.send_message(sender_id, client_reply)
+    except Exception:
+        logger.exception("instagram.non_text.processing.failed", sender_id=sender_id)
+        try:
+            await instagram.send_message(
+                sender_id,
+                "Произошла техническая ошибка. "
+                "Наши специалисты уже работают над этим. Попробуйте позже! 🛠️",
+            )
+        except Exception:
+            logger.exception("instagram.message.send_failed", sender_id=sender_id)
+
+
 async def _process_safely(sender_id: str, text: str) -> None:
     """Фоновая обработка сообщения.
 
@@ -478,6 +579,19 @@ async def receive_instagram_message(request: Request):
         if ev["kind"] == "manager":
             task = asyncio.create_task(
                 _mark_manager_active(ev["client_id"], ev.get("text", ""))
+            )
+        elif ev["kind"] == "user_non_text":
+            logger.info(
+                "instagram.non_text.processing",
+                sender_id=ev["sender_id"],
+                types=ev.get("non_text", {}).get("types"),
+            )
+            task = asyncio.create_task(
+                _process_non_text_safely(
+                    ev["sender_id"],
+                    ev.get("text", ""),
+                    ev.get("non_text", {}),
+                )
             )
         else:  # "user"
             logger.info("instagram.message.processing", sender_id=ev["sender_id"])

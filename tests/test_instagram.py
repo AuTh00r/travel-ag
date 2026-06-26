@@ -329,6 +329,238 @@ class TestGetUsername:
         assert result is None
 
 
+class TestNonTextParser:
+    """InstagramChannel._extract_non_text_metadata — определение non-text сигналов."""
+
+    @pytest.mark.asyncio
+    async def test_attachment_without_text(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "attachments": [{"type": "image"}],
+                        "mid": "mid_att_1",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["kind"] == "user_non_text"
+        assert ev["sender_id"] == "CLIENT_42"
+        assert ev["text"] == ""
+        assert "image" in ev["non_text"]["types"]
+
+    @pytest.mark.asyncio
+    async def test_attachment_with_text(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "text": "Смотри фото",
+                        "attachments": [{"type": "image"}],
+                        "mid": "mid_att_2",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["kind"] == "user_non_text"
+        assert ev["text"] == "Смотри фото"
+        assert ev["non_text"]["has_text"] is True
+
+    @pytest.mark.asyncio
+    async def test_reply_to(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "reply_to": {"mid": "some_mid"},
+                        "mid": "mid_reply_1",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["kind"] == "user_non_text"
+        assert "story_reply_or_reply" in ev["non_text"]["types"]
+
+    @pytest.mark.asyncio
+    async def test_referral(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "referral": {"source": "story"},
+                        "mid": "mid_ref_1",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["kind"] == "user_non_text"
+        assert "referral_or_shared_post" in ev["non_text"]["types"]
+
+    @pytest.mark.asyncio
+    async def test_plain_text_stays_user(self):
+        from src.channels.instagram import InstagramChannel
+
+        InstagramChannel._sent_mids.clear()
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_99"},
+                    "message": {
+                        "text": "Хочу тур",
+                        "mid": "mid_user_1",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert events == [
+            {"kind": "user", "sender_id": "CLIENT_99", "text": "Хочу тур", "mid": "mid_user_1"}
+        ]
+
+    @pytest.mark.asyncio
+    async def test_non_text_echo_bot_ignored(self):
+        from src.channels.instagram import InstagramChannel
+
+        InstagramChannel._sent_mids.clear()
+        InstagramChannel._sent_mids.add("mid_bot_non_text")
+        settings.instagram_app_id = ""
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "BUSINESS_ACC"},
+                    "recipient": {"id": "CLIENT_42"},
+                    "message": {
+                        "is_echo": True,
+                        "mid": "mid_bot_non_text",
+                        "attachments": [{"type": "image"}],
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert events == []
+
+    @pytest.mark.asyncio
+    async def test_non_text_echo_manager(self):
+        from src.channels.instagram import InstagramChannel
+
+        InstagramChannel._sent_mids.clear()
+        settings.instagram_app_id = ""
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "BUSINESS_ACC"},
+                    "recipient": {"id": "CLIENT_42"},
+                    "message": {
+                        "is_echo": True,
+                        "mid": "mid_human_non_text",
+                        "attachments": [{"type": "image"}],
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 1
+        assert events[0]["kind"] == "manager"
+        assert events[0]["client_id"] == "CLIENT_42"
+        assert events[0]["text"] == ""
+
+
+class TestNonTextWebhook:
+    """POST /webhook/instagram — обработка non-text сообщений."""
+
+    def setup_method(self):
+        settings.instagram_access_token = ""
+        settings.instagram_app_secret = ""
+
+    @patch("src.main._process_non_text_safely")
+    def test_attachment_triggers_non_text_handler(self, mock_process):
+        mock_process.return_value = None
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "attachments": [{"type": "image"}],
+                        "mid": "mid_nt_webhook_1",
+                    },
+                }]
+            }]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_process.assert_awaited_once()
+        args, _ = mock_process.await_args
+        assert args[0] == "CLIENT_42"
+
+    @patch("src.main._process_non_text_safely")
+    def test_dedup_skips_duplicate_non_text_mid(self, mock_process):
+        mock_process.return_value = None
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "attachments": [{"type": "image"}],
+                        "mid": "mid_nt_dedup_1",
+                    },
+                }]
+            }]
+        }
+        client.post("/webhook/instagram", json=payload)
+        assert mock_process.await_count == 1
+        client.post("/webhook/instagram", json=payload)
+        assert mock_process.await_count == 1
+
+    @patch("src.main._process_non_text_safely")
+    def test_non_text_no_mid_skipped(self, mock_process):
+        mock_process.return_value = None
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "attachments": [{"type": "image"}],
+                    },
+                }]
+            }]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_process.assert_not_awaited()
+
+
 class TestEchoClassification:
     """InstagramChannel.receive_message — классификация эхо-сообщений."""
 
@@ -427,3 +659,116 @@ class TestEchoClassification:
         assert events == [
             {"kind": "user", "sender_id": "CLIENT_99", "text": "Хочу тур", "mid": "mid_user_1"}
         ]
+
+
+class TestNonTextProcessing:
+    """_process_non_text_safely — эскалация non-text сообщений."""
+
+    @pytest.mark.asyncio
+    @patch("src.services.telegram_notify.TelegramNotifier")
+    @patch("src.main.instagram.send_message")
+    @patch("src.main.instagram.get_username")
+    @patch("src.main.get_session")
+    @patch("src.main.save_session")
+    @patch("src.main.is_manager_active")
+    async def test_non_text_sends_ack_and_notifies(
+        self,
+        mock_is_active,
+        mock_save,
+        mock_get_session,
+        mock_get_username,
+        mock_send,
+        mock_notifier_cls,
+    ):
+        from src.main import _process_non_text_safely
+
+        mock_is_active.return_value = False
+        mock_get_session.return_value = {"history": [], "escalation_count": 0}
+        mock_get_username.return_value = "test_user"
+        mock_send.return_value = None
+        mock_notifier = AsyncMock()
+        mock_notifier_cls.return_value = mock_notifier
+
+        await _process_non_text_safely(
+            "CLIENT_42",
+            "",
+            {"types": ["image"], "summary": "вложение: image"},
+        )
+
+        # Клиент получил acknowledgement
+        mock_send.assert_awaited_once()
+        ack_text = mock_send.await_args[0][1]
+        assert "передала вопрос менеджеру" in ack_text
+
+        # Менеджер уведомлён
+        mock_notifier.notify_manager.assert_awaited_once()
+
+        # Эскалация сохранена
+        saved_session = mock_save.await_args[0][1]
+        assert saved_session["escalation_count"] == 1
+
+    @pytest.mark.asyncio
+    @patch("src.services.telegram_notify.TelegramNotifier")
+    @patch("src.main.instagram.send_message")
+    @patch("src.main.instagram.get_username")
+    @patch("src.main.get_session")
+    @patch("src.main.save_session")
+    @patch("src.main.is_manager_active")
+    async def test_non_text_limit_reached_skips_telegram(
+        self,
+        mock_is_active,
+        mock_save,
+        mock_get_session,
+        mock_get_username,
+        mock_send,
+        mock_notifier_cls,
+    ):
+        from src.main import _process_non_text_safely
+
+        mock_is_active.return_value = False
+        mock_get_session.return_value = {"history": [], "escalation_count": 3}
+        mock_get_username.return_value = "test_user"
+        mock_send.return_value = None
+        mock_notifier = AsyncMock()
+        mock_notifier_cls.return_value = mock_notifier
+
+        await _process_non_text_safely(
+            "CLIENT_42",
+            "текст",
+            {"types": ["image"], "summary": "вложение: image"},
+        )
+
+        # Telegram НЕ вызван
+        mock_notifier.notify_manager.assert_not_awaited()
+
+        # Клиент получил "запрос уже передан"
+        ack_text = mock_send.await_args[0][1]
+        assert "уже передан" in ack_text
+
+    @pytest.mark.asyncio
+    @patch("src.main.instagram.send_message")
+    @patch("src.main.get_session")
+    @patch("src.main.is_manager_active")
+    async def test_non_text_manager_takeover_silent(
+        self,
+        mock_is_active,
+        mock_get_session,
+        mock_send,
+    ):
+        from src.main import _process_non_text_safely
+
+        mock_is_active.return_value = True
+        mock_get_session.return_value = {
+            "history": [],
+            "escalation_count": 0,
+            "manager_last_at": "2026-06-26T12:00:00+00:00",
+        }
+
+        await _process_non_text_safely(
+            "CLIENT_42",
+            "",
+            {"types": ["image"], "summary": "вложение: image"},
+        )
+
+        # Ничего не отправлено
+        mock_send.assert_not_awaited()

@@ -61,12 +61,52 @@ class InstagramChannel(ChannelBase):
         logger.warning("instagram.webhook.verify_failed")
         return Response(status_code=403, content="Forbidden")
 
+    @staticmethod
+    def _extract_non_text_metadata(message: dict) -> dict:
+        """Проверить наличие non-text сигналов: attachments, reply_to, referral.
+
+        Возвращает пустой dict, если сигналов нет.
+        Если сигналы есть — структуру с types, summary, has_text, text, raw_keys.
+        """
+        types: list[str] = []
+        raw_keys: list[str] = []
+
+        attachments = message.get("attachments")
+        if attachments and isinstance(attachments, list):
+            for att in attachments:
+                atype = att.get("type", "unknown")
+                types.append(atype)
+            raw_keys.append("attachments")
+
+        if message.get("reply_to"):
+            types.append("story_reply_or_reply")
+            raw_keys.append("reply_to")
+
+        if message.get("referral"):
+            types.append("referral_or_shared_post")
+            raw_keys.append("referral")
+
+        if not types:
+            return {}
+
+        text = message.get("text", "")
+        has_text = bool(text)
+        summary = f"вложение: {'; '.join(t for t in set(types))}"
+        return {
+            "types": types,
+            "summary": summary,
+            "has_text": has_text,
+            "text": text,
+            "raw_keys": raw_keys,
+        }
+
     async def receive_message(self, payload: dict) -> list[dict]:
         """Разобрать входящий webhook от Instagram.
 
         Возвращает список событий:
-          {"kind": "user",    "sender_id", "text", "mid"}  — сообщение клиента
-          {"kind": "manager", "client_id", "text", "mid"}  — живой менеджер ответил
+          {"kind": "user",        "sender_id", "text", "mid"}        — текстовое сообщение
+          {"kind": "user_non_text", "sender_id", "text", "mid", "non_text"} — вложение/пост/story reply
+          {"kind": "manager",     "client_id", "text", "mid"}        — живой менеджер ответил
         Эхо собственных ответов бота отфильтровывается (is_own_message).
         """
         events: list[dict] = []
@@ -94,17 +134,46 @@ class InstagramChannel(ChannelBase):
                     continue
 
                 sender_id = messaging.get("sender", {}).get("id")
-                text = message.get("text", "")
-                if sender_id and text:
-                    logger.info("instagram.message.received", sender_id=sender_id)
+                if not sender_id:
+                    continue
+                mid = message.get("mid", "")
+
+                non_text = self._extract_non_text_metadata(message)
+                if non_text:
+                    logger.info(
+                        "instagram.non_text.received",
+                        sender_id=sender_id,
+                        mid=mid,
+                        types=non_text["types"],
+                        has_text=non_text["has_text"],
+                    )
                     events.append(
                         {
-                            "kind": "user",
+                            "kind": "user_non_text",
                             "sender_id": sender_id,
-                            "text": text,
+                            "text": non_text["text"],
                             "mid": mid,
+                            "non_text": non_text,
                         }
                     )
+                else:
+                    text = message.get("text", "")
+                    if text:
+                        logger.info("instagram.message.received", sender_id=sender_id)
+                        events.append(
+                            {
+                                "kind": "user",
+                                "sender_id": sender_id,
+                                "text": text,
+                                "mid": mid,
+                            }
+                        )
+                    elif mid:
+                        logger.warning(
+                            "instagram.message.unsupported",
+                            sender_id=sender_id,
+                            mid=mid,
+                        )
 
         return events
 
