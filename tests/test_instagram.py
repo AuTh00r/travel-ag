@@ -759,7 +759,13 @@ class TestEchoClassification:
 class TestNonTextProcessing:
     """_process_non_text_safely — эскалация non-text сообщений."""
 
+    def setup_method(self):
+        from src.main import _in_ai_processing
+
+        _in_ai_processing.clear()
+
     @pytest.mark.asyncio
+    @patch("asyncio.sleep", return_value=None)
     @patch("src.services.telegram_notify.TelegramNotifier")
     @patch("src.main.instagram.send_message")
     @patch("src.main.instagram.get_username")
@@ -774,6 +780,7 @@ class TestNonTextProcessing:
         mock_get_username,
         mock_send,
         mock_notifier_cls,
+        mock_sleep,
     ):
         from src.main import _process_non_text_safely
 
@@ -803,6 +810,7 @@ class TestNonTextProcessing:
         assert saved_session["escalation_count"] == 1
 
     @pytest.mark.asyncio
+    @patch("asyncio.sleep", return_value=None)
     @patch("src.services.telegram_notify.TelegramNotifier")
     @patch("src.main.instagram.send_message")
     @patch("src.main.instagram.get_username")
@@ -817,6 +825,7 @@ class TestNonTextProcessing:
         mock_get_username,
         mock_send,
         mock_notifier_cls,
+        mock_sleep,
     ):
         from src.main import _process_non_text_safely
 
@@ -839,6 +848,31 @@ class TestNonTextProcessing:
         # Клиент получил "запрос уже передан"
         ack_text = mock_send.await_args[0][1]
         assert "уже передан" in ack_text
+
+    @pytest.mark.asyncio
+    @patch("asyncio.sleep", return_value=None)
+    @patch("src.main.instagram.send_message")
+    @patch("src.main.get_session")
+    async def test_non_text_ack_skipped_when_ai_pending(
+        self,
+        mock_get_session,
+        mock_send,
+        mock_sleep,
+    ):
+        from src.main import _in_ai_processing, _process_non_text_safely
+
+        _in_ai_processing["CLIENT_42"] = 999999.0  # не истекло
+        mock_get_session.return_value = {"history": [], "escalation_count": 0}
+
+        await _process_non_text_safely(
+            "CLIENT_42",
+            "",
+            {"types": ["image"], "summary": "вложение: image"},
+        )
+
+        # Auto-ack не отправлен — AI обработка активна
+        mock_send.assert_not_awaited()
+        _in_ai_processing.clear()
 
     @pytest.mark.asyncio
     @patch("src.main.instagram.send_message")

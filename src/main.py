@@ -47,6 +47,13 @@ _PROCESSED_MIDS_MAX = 10_000  # ограничение размера сета
 _locks: dict[str, asyncio.Lock] = {}
 _locks_lock = asyncio.Lock()
 
+# Meta присылает shared post и текст в отдельных POST-запросах (~2s apart).
+# _in_ai_processing фиксирует sender_id, для которого запущена AI-обработка.
+# _process_non_text_safely проверяет этот dict и пропускает auto-ack,
+# если AI уже отвечает или скоро ответит.
+_in_ai_processing: dict[str, float] = {}
+_AI_PROCESSING_TTL = 30.0  # секунд
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -425,7 +432,8 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
     """Обработка non-text сообщения (вложение, shared post, story reply).
 
     Не вызывает LLM. Передаёт информацию менеджеру через Telegram
-    и отвечает клиенту acknowledgement.
+    и отвечает клиенту acknowledgement с задержкой, чтобы не дублировать
+    AI-ответ, если Meta пришлёт текст отдельным POST-запросом.
     """
     try:
         from src.services.telegram_notify import TelegramNotifier
@@ -440,15 +448,11 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
                     logger.info("manager.active.skip_non_text", sender_id=sender_id)
                     return
 
-        # 2. Per-user lock + перечитать session
+        # 2. Per-user lock — эскалация и сохранение сессии
         lock = await _get_lock(sender_id)
         async with lock:
             session = await get_session(sender_id)
-
-            # 3. Получить instagram handle
             instagram_handle = await instagram.get_username(sender_id)
-
-            # 4. Текущий лимит эскалаций
             escalation_count = session.get("escalation_count", 0)
             summary = metadata.get("summary", "неизвестный тип")
 
@@ -494,7 +498,7 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
                     "ожидайте, пожалуйста. Он свяжется с вами в ближайшее время."
                 )
 
-            # 5. Сохранить историю
+            # 3. Сохранить историю
             history = session.get("history", [])
             history.append(
                 {
@@ -508,8 +512,22 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
             session["escalation_count"] = escalation_count
             await save_session(sender_id, session)
 
-            # 6. Ответить клиенту
-            await instagram.send_message(sender_id, client_reply)
+        # 4. Локальная блокировка отпущена.
+        #    Ждём немного: если появилась AI-обработка от того же sender'а,
+        #    auto-ack не отправляем (AI ответит и без нас).
+        import time as _time
+
+        await asyncio.sleep(5)
+        now = _time.monotonic()
+        if sender_id in _in_ai_processing and now - _in_ai_processing.get(sender_id, 0) < _AI_PROCESSING_TTL:
+            logger.info(
+                "instagram.non_text.ack_skipped_ai_pending",
+                sender_id=sender_id,
+            )
+            return
+
+        # 5. Ответить клиенту
+        await instagram.send_message(sender_id, client_reply)
     except Exception:
         logger.exception("instagram.non_text.processing.failed", sender_id=sender_id)
         try:
@@ -561,6 +579,14 @@ async def receive_instagram_message(request: Request):
     logger.info("instagram.webhook.received", events=len(events))
 
     # Запускаем обработку в фоне и отвечаем Meta 200 мгновенно.
+    # Сначала отмечаем sender'ов, для которых будет AI-обработка.
+    # Это нужно, чтобы _process_non_text_safely мог пропустить auto-ack,
+    # если AI уже обрабатывает текст клиента.
+    import time as _time
+    for ev in events:
+        if ev["kind"] in ("user", "user_non_text") and ev.get("text"):
+            _in_ai_processing[ev["sender_id"]] = _time.monotonic()
+
     for ev in events:
         mid = ev.get("mid", "")
         if mid:
