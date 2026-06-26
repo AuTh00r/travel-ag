@@ -248,9 +248,13 @@ def _extract_escalation(text: str) -> tuple[str, str] | None:
     return reason, context or reason
 
 
+_TEXT_FORMATTING_RE = re.compile(r"\*{1,2}(.+?)\*{1,2}")
+
+
 def _strip_markers(text: str) -> str:
     text = _BOOKING_RE.sub("", text)
     text = _ESCALATION_RE.sub("", text)
+    text = _TEXT_FORMATTING_RE.sub(r"\1", text)
     return text.strip()
 
 
