@@ -6,6 +6,7 @@
 - SSH-доступ к VPS (Ubuntu 24.04 LTS)
 - Доступ к API: DeepSeek, Meta Graph API (Instagram), Google Sheets, Telegram Bot
 - Git
+- Docker / Docker Compose (для контейнерного запуска)
 
 ## Локальная разработка
 
@@ -38,9 +39,13 @@ curl http://localhost:8000/health
 # → {"status": "ok"}
 
 # 8. Тесты
-pytest tests/ -v
-ruff check src/
+pytest tests/ -q
+ruff check src tests
 ```
+
+Актуальный тестовый набор: 117 тестов в 8 файлах. `pyproject.toml` включает
+`asyncio_mode = "auto"`, а `conftest.py` добавляет корень проекта в `sys.path`
+и объявляет Playwright fixtures `browser` / `page`.
 
 ## Деплой на Timeweb Cloud VPS
 
@@ -88,10 +93,6 @@ cd /opt/travel-agent-bot
 python3.11 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-
-# Удалить sentence-transformers из требований если есть
-# chromadb использует встроенный ONNX, PyTorch не нужен
-pip uninstall -y sentence-transformers torch
 
 # Настроить .env
 cp .env.example .env
@@ -310,5 +311,6 @@ cd /opt/travel-agent-bot
 git pull
 source .venv/bin/activate
 pip install -r requirements.txt
+pytest tests/ -q
 systemctl restart travel-bot
 ```

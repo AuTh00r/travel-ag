@@ -9,10 +9,12 @@
 5. Вставить в `.env`:
    ```
    DEEPSEEK_API_KEY=sk-...
-   DEEPSEEK_MODEL=deepseek-v4-flash
+   DEEPSEEK_MODEL=deepseek-chat
    ```
 
-> Имена `deepseek-chat` и `deepseek-reasoner` deprecated с 24.07.2026. Использовать `deepseek-v4-flash`.
+Код использует OpenAI-compatible endpoint DeepSeek через `langchain-openai`.
+Модель переключается только переменной `DEEPSEEK_MODEL`; по умолчанию в проекте
+используется `deepseek-chat`.
 
 ---
 
@@ -177,8 +179,8 @@ INSTAGRAM_IG_USER_ID=...        (из шага 7 или 8)
 
 ```bash
 # Запустить все тесты
-pytest tests/ -v
+pytest tests/ -q
 
 # Линтер
-ruff check src/
+ruff check src tests
 ```

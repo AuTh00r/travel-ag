@@ -581,18 +581,30 @@ async def receive_instagram_message(request: Request):
                 _mark_manager_active(ev["client_id"], ev.get("text", ""))
             )
         elif ev["kind"] == "user_non_text":
-            logger.info(
-                "instagram.non_text.processing",
-                sender_id=ev["sender_id"],
-                types=ev.get("non_text", {}).get("types"),
-            )
-            task = asyncio.create_task(
-                _process_non_text_safely(
-                    ev["sender_id"],
-                    ev.get("text", ""),
-                    ev.get("non_text", {}),
+            nt_text = ev.get("text", "")
+            nt_types = ev.get("non_text", {}).get("types", [])
+            if nt_text:
+                nt_summary = ev.get("non_text", {}).get("summary", "")
+                augmented = f"{nt_text}\n\n[Клиент также отправил: {nt_summary}]"
+                logger.info(
+                    "instagram.non_text.with_text",
+                    sender_id=ev["sender_id"],
+                    types=nt_types,
                 )
-            )
+                task = asyncio.create_task(_process_safely(ev["sender_id"], augmented))
+            else:
+                logger.info(
+                    "instagram.non_text.processing",
+                    sender_id=ev["sender_id"],
+                    types=nt_types,
+                )
+                task = asyncio.create_task(
+                    _process_non_text_safely(
+                        ev["sender_id"],
+                        "",
+                        ev.get("non_text", {}),
+                    )
+                )
         else:  # "user"
             logger.info("instagram.message.processing", sender_id=ev["sender_id"])
             task = asyncio.create_task(_process_safely(ev["sender_id"], ev["text"]))

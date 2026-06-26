@@ -82,7 +82,7 @@ ssh -i ~/.ssh/id_ed25519_travelbot root@201.51.3.72
 journalctl -u travel-bot -f    # логи бота
 systemctl restart travel-bot    # рестарт
 certbot certificates            # статус SSL
-cd /opt/travel-agent-bot && source .venv/bin/activate && pytest tests/ -v   # тесты
+cd /opt/travel-agent-bot && source .venv/bin/activate && pytest tests/ -q   # тесты
 
 # Быстрая диагностика webhook:
 curl https://travelagenttest.duckdns.org/webhook/instagram/last_seen

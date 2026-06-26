@@ -12,6 +12,9 @@ git push origin master
 ssh -i ~/.ssh/id_ed25519_travelbot root@201.51.3.72
 cd /opt/travel-agent-bot
 git pull origin master
+source .venv/bin/activate
+pip install -r requirements.txt
+pytest tests/ -q
 systemctl restart travel-bot
 
 # 3. Проверить

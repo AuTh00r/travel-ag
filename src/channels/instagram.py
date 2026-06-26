@@ -175,7 +175,48 @@ class InstagramChannel(ChannelBase):
                             mid=mid,
                         )
 
+        if len(events) > 1:
+            events = self._merge_sender_events(events)
+
         return events
+
+    @staticmethod
+    def _merge_sender_events(events: list[dict]) -> list[dict]:
+        """Смержить user и user_non_text события одного отправителя.
+
+        Meta часто присылает shared post и текст как два отдельных messaging-события
+        в одном webhook. Если у отправителя есть оба типа в одном батче:
+        - текст из user-события переносится в user_non_text
+        - одно из событий удаляется (дубль)
+        """
+        non_text_map: dict[str, int] = {}  # sender_id → index in events
+        user_indices: dict[str, list[int]] = {}
+        to_drop: set[int] = set()
+
+        for i, ev in enumerate(events):
+            if ev["kind"] == "user_non_text":
+                sid = ev["sender_id"]
+                non_text_map[sid] = i
+            elif ev["kind"] == "user":
+                sid = ev["sender_id"]
+                if sid not in user_indices:
+                    user_indices[sid] = []
+                user_indices[sid].append(i)
+
+        # Merge: переносим текст из user → user_non_text
+        for sid, nt_idx in non_text_map.items():
+            if sid not in user_indices:
+                continue
+            for ui in user_indices[sid]:
+                user_ev = events[ui]
+                if user_ev.get("text"):
+                    nt_ev = events[nt_idx]
+                    nt_ev["text"] = user_ev["text"]
+                    nt_ev["non_text"]["text"] = user_ev["text"]
+                    nt_ev["non_text"]["has_text"] = True
+                to_drop.add(ui)
+
+        return [ev for i, ev in enumerate(events) if i not in to_drop]
 
     async def send_message(self, recipient_id: str, text: str) -> str | None:
         """Отправить текстовое сообщение через Instagram Graph API.

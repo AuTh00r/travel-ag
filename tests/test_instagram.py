@@ -471,6 +471,101 @@ class TestNonTextParser:
         assert events == []
 
     @pytest.mark.asyncio
+    async def test_merge_non_text_with_user_event(self):
+        """user_non_text и user одного sender мержатся в одно событие."""
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [
+                    {
+                        "sender": {"id": "CLIENT_42"},
+                        "message": {
+                            "attachments": [{"type": "ig_post"}],
+                            "mid": "mid_post_1",
+                        },
+                    },
+                    {
+                        "sender": {"id": "CLIENT_42"},
+                        "message": {
+                            "text": "смотри какой тур",
+                            "mid": "mid_text_1",
+                        },
+                    },
+                ]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 1
+        ev = events[0]
+        assert ev["kind"] == "user_non_text"
+        assert ev["text"] == "смотри какой тур"
+        assert ev["non_text"]["has_text"] is True
+
+    @pytest.mark.asyncio
+    async def test_merge_only_same_sender(self):
+        """Разные sender'ы не мержатся."""
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [
+                    {
+                        "sender": {"id": "CLIENT_42"},
+                        "message": {
+                            "attachments": [{"type": "ig_post"}],
+                            "mid": "mid_post_1",
+                        },
+                    },
+                    {
+                        "sender": {"id": "CLIENT_43"},
+                        "message": {
+                            "text": "просто текст",
+                            "mid": "mid_text_2",
+                        },
+                    },
+                ]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 2
+        kinds = [ev["kind"] for ev in events]
+        assert "user_non_text" in kinds
+        assert "user" in kinds
+
+    @pytest.mark.asyncio
+    async def test_no_merge_without_non_text(self):
+        """Два user-события без non_text не мержатся."""
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [
+                    {
+                        "sender": {"id": "CLIENT_42"},
+                        "message": {
+                            "text": "первое",
+                            "mid": "mid_1",
+                        },
+                    },
+                    {
+                        "sender": {"id": "CLIENT_42"},
+                        "message": {
+                            "text": "второе",
+                            "mid": "mid_2",
+                        },
+                    },
+                ]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 2
+        assert all(ev["kind"] == "user" for ev in events)
+
+    @pytest.mark.asyncio
     async def test_non_text_echo_manager(self):
         from src.channels.instagram import InstagramChannel
 
