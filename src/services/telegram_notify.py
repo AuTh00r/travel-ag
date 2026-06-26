@@ -62,7 +62,50 @@ def _build_notification_text(
 class TelegramNotifier:
     def __init__(self) -> None:
         self._token: str = settings.telegram_bot_token
-        self._chat_id: str = settings.telegram_manager_chat_id
+        self._chat_ids: list[str] = [
+            cid
+            for cid in [
+                settings.telegram_manager_chat_id,
+                settings.telegram_secondary_chat_id,
+            ]
+            if cid
+        ]
+
+    async def _send(
+        self,
+        text: str,
+        chat_id: str,
+        sender_id: str | None = None,
+        tag: str | None = None,
+        tour: str | None = None,
+    ) -> None:
+        url = TELEGRAM_API_URL.format(token=self._token)
+        async with AsyncClient(timeout=15) as client:
+            response = await client.post(
+                url,
+                json={
+                    "chat_id": chat_id,
+                    "text": text,
+                    "parse_mode": "Markdown",
+                },
+            )
+        if response.status_code != 200:
+            logger.error(
+                "telegram.send.failed",
+                chat_id=chat_id,
+                status=response.status_code,
+                text=response.text,
+            )
+            raise TelegramError(
+                f"Telegram API error for {chat_id}: {response.status_code} {response.text}"
+            )
+        logger.info(
+            "telegram.sent",
+            chat_id=chat_id,
+            sender_id=sender_id,
+            tag=tag,
+            tour=tour,
+        )
 
     async def notify_manager(
         self,
@@ -74,7 +117,7 @@ class TelegramNotifier:
         client_email: str | None = None,
         tag: str = "Нужен звонок",
     ) -> None:
-        if not self._token or not self._chat_id:
+        if not self._token or not self._chat_ids:
             raise TelegramError(
                 "TELEGRAM_BOT_TOKEN или TELEGRAM_MANAGER_CHAT_ID не настроены"
             )
@@ -89,29 +132,14 @@ class TelegramNotifier:
             tag=tag,
         )
 
-        url = TELEGRAM_API_URL.format(token=self._token)
-
-        async with AsyncClient(timeout=15) as client:
-            response = await client.post(
-                url,
-                json={
-                    "chat_id": self._chat_id,
-                    "text": text,
-                    "parse_mode": "Markdown",
-                },
-            )
-
-        if response.status_code != 200:
-            raise TelegramError(
-                f"Telegram API error: {response.status_code} {response.text}"
-            )
-
-        logger.info(
-            "telegram.notification.sent",
-            sender_id=sender_id,
-            tag=tag,
-            chat_id=self._chat_id,
-        )
+        last_exc = None
+        for cid in self._chat_ids:
+            try:
+                await self._send(text=text, chat_id=cid, sender_id=sender_id, tag=tag)
+            except TelegramError as e:
+                last_exc = e
+        if last_exc and len(self._chat_ids) > 0:
+            raise last_exc
 
     async def notify_booking(
         self,
@@ -122,7 +150,7 @@ class TelegramNotifier:
         client_email: str | None = None,
         tour: str = "",
     ) -> None:
-        if not self._token or not self._chat_id:
+        if not self._token or not self._chat_ids:
             raise TelegramError(
                 "TELEGRAM_BOT_TOKEN или TELEGRAM_MANAGER_CHAT_ID не настроены"
             )
@@ -156,26 +184,12 @@ class TelegramNotifier:
         lines.append(f"\U0001f517 *Google Sheets:* [Открыть заявки]({sheets_link})")
 
         text = "\n".join(lines)
-        url = TELEGRAM_API_URL.format(token=self._token)
 
-        async with AsyncClient(timeout=15) as client:
-            response = await client.post(
-                url,
-                json={
-                    "chat_id": self._chat_id,
-                    "text": text,
-                    "parse_mode": "Markdown",
-                },
-            )
-
-        if response.status_code != 200:
-            raise TelegramError(
-                f"Telegram API error: {response.status_code} {response.text}"
-            )
-
-        logger.info(
-            "telegram.booking_notification.sent",
-            sender_id=sender_id,
-            tour=tour,
-            chat_id=self._chat_id,
-        )
+        last_exc = None
+        for cid in self._chat_ids:
+            try:
+                await self._send(text=text, chat_id=cid, sender_id=sender_id, tour=tour)
+            except TelegramError as e:
+                last_exc = e
+        if last_exc and len(self._chat_ids) > 0:
+            raise last_exc

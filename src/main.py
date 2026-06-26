@@ -207,11 +207,19 @@ def _extract_booking(text: str) -> dict | None:
             data[key.strip().lower()] = val.strip()
     if not data.get("имя") or not data.get("телефон"):
         return None
+    travelers_raw = data.get("количество", "")
+    try:
+        travelers = int(travelers_raw)
+    except (ValueError, TypeError):
+        travelers = 1
     return {
         "name": data.get("имя", ""),
         "phone": data.get("телефон", ""),
         "email": data.get("email", ""),
         "tour": data.get("тур", ""),
+        "destination": data.get("направление", ""),
+        "budget": data.get("бюджет", ""),
+        "travelers": travelers,
     }
 
 

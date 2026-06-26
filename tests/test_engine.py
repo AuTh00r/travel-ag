@@ -17,6 +17,9 @@ class TestExtractBooking:
 Телефон: +375291234567
 Email: ivan@mail.com
 Тур: Анталья
+Направление: Турция
+Бюджет: 2000$
+Количество: 2
 ===БРОНЬ==="""
         result = _extract_booking(text)
         assert result == {
@@ -24,6 +27,9 @@ Email: ivan@mail.com
             "phone": "+375291234567",
             "email": "ivan@mail.com",
             "tour": "Анталья",
+            "destination": "Турция",
+            "budget": "2000$",
+            "travelers": 2,
         }
 
     def test_no_booking(self):
@@ -34,6 +40,43 @@ Email: ivan@mail.com
 Имя: Иван
 ===БРОНЬ==="""
         assert _extract_booking(text) is None
+
+    def test_booking_minimal_fields(self):
+        text = """===БРОНЬ===
+Имя: Иван
+Телефон: +375291234567
+===БРОНЬ==="""
+        result = _extract_booking(text)
+        assert result == {
+            "name": "Иван",
+            "phone": "+375291234567",
+            "email": "",
+            "tour": "",
+            "destination": "",
+            "budget": "",
+            "travelers": 1,
+        }
+
+    def test_booking_non_numeric_travelers(self):
+        text = """===БРОНЬ===
+Имя: Анна
+Телефон: +375331111111
+Email: anna@mail.com
+Тур: Париж
+Направление: Франция
+Бюджет: 3000$
+Количество: двое
+===БРОНЬ==="""
+        result = _extract_booking(text)
+        assert result == {
+            "name": "Анна",
+            "phone": "+375331111111",
+            "email": "anna@mail.com",
+            "tour": "Париж",
+            "destination": "Франция",
+            "budget": "3000$",
+            "travelers": 1,
+        }
 
 
 class TestExtractEscalation:
@@ -196,6 +239,9 @@ Email: ivan@mail.com
             phone="+375291234567",
             email="ivan@mail.com",
             tour="Анталья",
+            destination="",
+            budget="",
+            travelers=1,
         )
     finally:
         for p in patches:

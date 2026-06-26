@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # Telegram Bot (уведомления менеджерам)
     telegram_bot_token: str = ""
     telegram_manager_chat_id: str = ""
+    telegram_secondary_chat_id: str = ""
 
     # ChromaDB (RAG FAQ)
     chroma_db_dir: str = "data/chroma"
