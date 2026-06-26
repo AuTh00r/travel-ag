@@ -25,13 +25,6 @@ def _build_notification_text(
     client_email: str | None = None,
     tag: str = "Нужен звонок",
 ) -> str:
-    sheets_id = settings.google_requests_sheet_id
-    sheets_link = (
-        f"https://docs.google.com/spreadsheets/d/{sheets_id}"
-        if sheets_id
-        else "_не указан_"
-    )
-
     handle = f"@{instagram_handle}" if instagram_handle else sender_id
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
 
@@ -61,7 +54,12 @@ def _build_notification_text(
         lines.append("")
 
     lines.append(f"\U0001f3f7 *Тег:* `{tag}`")
-    lines.append(f"\U0001f517 *Google Sheets:* [Открыть заявки]({sheets_link})")
+    sheets_id = settings.google_requests_sheet_id
+    if sheets_id:
+        lines.append(f"\U0001f517 *Google Sheets:*")
+        lines.append(f"https://docs.google.com/spreadsheets/d/{sheets_id}")
+    else:
+        lines.append("\U0001f517 *Google Sheets:* не указан")
 
     return "\n".join(lines)
 
@@ -182,13 +180,12 @@ class TelegramNotifier:
             lines.append(f"\U0001f4e7 *Email:* {client_email}")
 
         sheets_id = settings.google_requests_sheet_id
-        sheets_link = (
-            f"https://docs.google.com/spreadsheets/d/{sheets_id}"
-            if sheets_id
-            else "_не указан_"
-        )
         lines.append("")
-        lines.append(f"\U0001f517 *Google Sheets:* [Открыть заявки]({sheets_link})")
+        if sheets_id:
+            lines.append("\U0001f517 *Google Sheets:*")
+            lines.append(f"https://docs.google.com/spreadsheets/d/{sheets_id}")
+        else:
+            lines.append("\U0001f517 *Google Sheets:* не указан")
 
         text = "\n".join(lines)
 
