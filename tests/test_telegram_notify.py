@@ -100,7 +100,6 @@ async def test_notify_manager_success():
     mock_client.post.assert_called_once()
     _, kwargs = mock_client.post.call_args
     assert kwargs["json"]["chat_id"] is not None
-    assert kwargs["json"]["parse_mode"] == "Markdown"
     assert "ivan_petrov" in kwargs["json"]["text"]
     assert "ищет тур" in kwargs["json"]["text"]
 

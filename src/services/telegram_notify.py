@@ -11,9 +11,7 @@ logger = get_logger()
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
 
 
-def _escape_md(text: str) -> str:
-    """Escape Markdown special characters in user-provided text."""
-    return text.replace("_", "\\_").replace("*", "\\*").replace("`", "\\`")
+
 
 
 def _build_notification_text(
@@ -28,16 +26,14 @@ def _build_notification_text(
     handle = f"@{instagram_handle}" if instagram_handle else sender_id
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
 
-    escaped_context = _escape_md(context)
-
     lines = [
-        "\U0001f6a8 *Новая эскалация*",
+        "\U0001f6a8 Новая эскалация",
         "",
-        f"\U0001f464 *Клиент:* {handle}",
+        f"\U0001f464 Клиент: {handle}",
         f"\U0001f550 {now}",
         "",
-        "\U0001f4cb *Суть:*",
-        escaped_context,
+        "\U0001f4cb Суть:",
+        context,
         "",
     ]
 
@@ -49,17 +45,17 @@ def _build_notification_text(
     if client_email:
         contacts.append(f"\U0001f4e7 {client_email}")
     if contacts:
-        lines.append("\U0001f4cb *Контакты:*")
+        lines.append("\U0001f4cb Контакты:")
         lines.extend(contacts)
         lines.append("")
 
-    lines.append(f"\U0001f3f7 *Тег:* `{tag}`")
+    lines.append(f"\U0001f3f7 Тег: {tag}")
     sheets_id = settings.google_requests_sheet_id
     if sheets_id:
-        lines.append(f"\U0001f517 *Google Sheets:*")
+        lines.append(f"\U0001f517 Google Sheets:")
         lines.append(f"https://docs.google.com/spreadsheets/d/{sheets_id}")
     else:
-        lines.append("\U0001f517 *Google Sheets:* не указан")
+        lines.append("\U0001f517 Google Sheets: не указан")
 
     return "\n".join(lines)
 
@@ -91,7 +87,6 @@ class TelegramNotifier:
                 json={
                     "chat_id": chat_id,
                     "text": text,
-                    "parse_mode": "Markdown",
                 },
             )
         if response.status_code != 200:
@@ -164,28 +159,28 @@ class TelegramNotifier:
         now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
 
         lines = [
-            "\U0001f4e9 *Новая бронь*",
+            "\U0001f4e9 Новая бронь",
             "",
-            f"\U0001f464 *Клиент:* {handle}",
+            f"\U0001f464 Клиент: {handle}",
             f"\U0001f550 {now}",
             "",
         ]
         if tour:
-            lines.append(f"\U0001f399 *Тур:* {tour}")
+            lines.append(f"\U0001f399 Тур: {tour}")
         if client_name:
-            lines.append(f"\U0001f464 *Имя:* {client_name}")
+            lines.append(f"\U0001f464 Имя: {client_name}")
         if client_phone:
-            lines.append(f"\U0001f4de *Телефон:* {client_phone}")
+            lines.append(f"\U0001f4de Телефон: {client_phone}")
         if client_email:
-            lines.append(f"\U0001f4e7 *Email:* {client_email}")
+            lines.append(f"\U0001f4e7 Email: {client_email}")
 
         sheets_id = settings.google_requests_sheet_id
         lines.append("")
         if sheets_id:
-            lines.append("\U0001f517 *Google Sheets:*")
+            lines.append("\U0001f517 Google Sheets:")
             lines.append(f"https://docs.google.com/spreadsheets/d/{sheets_id}")
         else:
-            lines.append("\U0001f517 *Google Sheets:* не указан")
+            lines.append("\U0001f517 Google Sheets: не указан")
 
         text = "\n".join(lines)
 
