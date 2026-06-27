@@ -340,7 +340,12 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         instagram_handle = await instagram.get_username(sender_id)
 
         escalation_count = session.get("escalation_count", 0)
-        messages = build_full_prompt(tours_text, faq_context, history, text, escalation_count)
+        from datetime import datetime as dt
+        current_time = dt.now().strftime("%H:%M")
+        messages = build_full_prompt(
+            tours_text, faq_context, history, text, escalation_count,
+            current_time=current_time,
+        )
 
         llm = get_llm()
         response = await llm.ainvoke(messages)
