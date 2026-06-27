@@ -1,9 +1,8 @@
 """tour_search удалён — логика поиска в промпте LLM.
 
-test_tour_search.py сохранён как заглушка для совместимости
-с тестовым раннером; тесты парсинга маркеров в test_engine.py."""
+test_tour_search.py сохранён для тестов парсинга DOCX-туров."""
 
-from src.services.tour_loader import _extract_tour_section
+from src.services.tour_loader import _extract_tour_section, _split_tours
 
 
 def test_extract_tour_section_puts_url_first():
@@ -48,3 +47,56 @@ def test_extract_tour_section_key_fields_after_url():
     url_idx = next(i for i, line in enumerate(lines) if "Ссылка на тур" in line)
     cost_idx = next(i for i, line in enumerate(lines) if line.startswith("Стоимость:"))
     assert cost_idx > url_idx
+
+
+def test_split_tours_single():
+    paragraphs = [
+        "Тур A",
+        "Маршрут: A - B",
+        "https://docs.google.com/document/d/1",
+    ]
+    result = _split_tours(paragraphs)
+    assert len(result) == 1
+    assert result[0] == paragraphs
+
+
+def test_split_tours_multi():
+    paragraphs = [
+        "Тур A",
+        "Маршрут: A - B",
+        "https://docs.google.com/document/d/1",
+        "Тур B",
+        "Маршрут: C - D",
+        "https://docs.google.com/document/d/2",
+        "Тур C",
+        "Маршрут: E - F",
+        "https://docs.google.com/document/d/3",
+    ]
+    result = _split_tours(paragraphs)
+    assert len(result) == 3
+    assert result[0][0] == "Тур A"
+    assert result[1][0] == "Тур B"
+    assert result[2][0] == "Тур C"
+    assert "https://docs.google.com/document/d/1" in result[0][-1]
+    assert "https://docs.google.com/document/d/2" in result[1][-1]
+    assert "https://docs.google.com/document/d/3" in result[2][-1]
+
+
+def test_split_tours_no_url():
+    paragraphs = ["Тур A", "Маршрут: A - B", "Описание"]
+    result = _split_tours(paragraphs)
+    assert len(result) == 1
+    assert result[0] == paragraphs
+
+
+def test_split_tours_trailing_text_after_last_url():
+    paragraphs = [
+        "Тур A",
+        "https://docs.google.com/document/d/1",
+        "Тур B",
+        "https://docs.google.com/document/d/2",
+        "Лишний текст без URL",
+    ]
+    result = _split_tours(paragraphs)
+    assert len(result) == 3
+    assert result[2] == ["Лишний текст без URL"]

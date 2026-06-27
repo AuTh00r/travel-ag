@@ -46,6 +46,21 @@ def _extract_tour_section(filename: str, paragraphs: list[str]) -> str:
     return "\n".join(parts)
 
 
+def _split_tours(paragraphs: list[str]) -> list[list[str]]:
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for p in paragraphs:
+        if _URL_RE.search(p) and current:
+            current.append(p)
+            blocks.append(current)
+            current = []
+        else:
+            current.append(p)
+    if current:
+        blocks.append(current)
+    return blocks
+
+
 def load_tours(folder_path: str | None = None) -> str:
     global _tours_text
 
@@ -57,10 +72,12 @@ def load_tours(folder_path: str | None = None) -> str:
         filepath = os.path.join(path, filename)
         doc = Document(filepath)
         paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-        tour_name = filename.replace(".docx", "")
-        section = _extract_tour_section(tour_name, paragraphs)
-        all_tours.append(section)
-        logger.info("tour_loader.loaded", file=filename)
+        tour_blocks = _split_tours(paragraphs)
+        for block in tour_blocks:
+            tour_name = block[0].strip().rstrip(":").strip()
+            section = _extract_tour_section(tour_name, block)
+            all_tours.append(section)
+        logger.info("tour_loader.loaded", file=filename, tours=len(tour_blocks))
 
     _tours_text = "\n\n".join(all_tours)
     logger.info("tour_loader.complete", chars=len(_tours_text), tours=len(all_tours))
