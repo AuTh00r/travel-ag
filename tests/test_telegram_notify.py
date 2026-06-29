@@ -86,16 +86,17 @@ async def test_notify_manager_success():
 
     with patch("src.services.telegram_notify.AsyncClient", return_value=mock_client):
         with patch("src.services.telegram_notify.settings.telegram_secondary_chat_id", ""):
-            notifier = TelegramNotifier()
-            await notifier.notify_manager(
-                sender_id="123",
-                instagram_handle="ivan_petrov",
-                context="ищет тур в Турцию",
-                client_name="Иван",
-                client_phone="+375291234567",
-                client_email="ivan@mail.com",
-                tag="Нужен звонок",
-            )
+            with patch("src.services.telegram_notify.settings.telegram_tertiary_chat_id", ""):
+                notifier = TelegramNotifier()
+                await notifier.notify_manager(
+                    sender_id="123",
+                    instagram_handle="ivan_petrov",
+                    context="ищет тур в Турцию",
+                    client_name="Иван",
+                    client_phone="+375291234567",
+                    client_email="ivan@mail.com",
+                    tag="Горящий тур",
+                )
 
     mock_client.post.assert_called_once()
     _, kwargs = mock_client.post.call_args
@@ -116,9 +117,10 @@ async def test_notify_manager_api_error():
 
     with patch("src.services.telegram_notify.AsyncClient", return_value=mock_client):
         with patch("src.services.telegram_notify.settings.telegram_secondary_chat_id", ""):
-            notifier = TelegramNotifier()
-            with pytest.raises(Exception):
-                await notifier.notify_manager(
-                    sender_id="123",
-                    context="тест",
-                )
+            with patch("src.services.telegram_notify.settings.telegram_tertiary_chat_id", ""):
+                notifier = TelegramNotifier()
+                with pytest.raises(Exception):
+                    await notifier.notify_manager(
+                        sender_id="123",
+                        context="тест",
+                    )
