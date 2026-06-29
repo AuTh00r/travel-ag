@@ -68,7 +68,6 @@ class TelegramNotifier:
             for cid in [
                 settings.telegram_manager_chat_id,
                 settings.telegram_secondary_chat_id,
-                settings.telegram_tertiary_chat_id,
             ]
             if cid
         ]
