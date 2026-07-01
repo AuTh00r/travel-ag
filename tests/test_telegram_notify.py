@@ -42,14 +42,7 @@ def test_build_notification_no_handle_falls_back_to_sender_id():
     assert "@" not in text
 
 
-def test_build_notification_without_sheets_id():
-    with patch("src.services.telegram_notify.settings.google_requests_sheet_id", ""):
-        text = _build_notification_text(
-            sender_id="123",
-            instagram_handle="test",
-            context="тест",
-        )
-        assert "не указан" in text.lower()
+
 
 
 def test_build_notification_contacts_section_shown_when_any_contact():

@@ -22,23 +22,6 @@ def _get_connection() -> sqlite3.Connection:
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
         """)
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS requests (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            client_id TEXT NOT NULL,
-            name TEXT NOT NULL,
-            phone TEXT NOT NULL,
-            email TEXT NOT NULL,
-            tour TEXT DEFAULT '',
-            destination TEXT DEFAULT '',
-            budget TEXT DEFAULT '',
-            travelers INTEGER DEFAULT 1,
-            status TEXT DEFAULT 'Новая',
-            source TEXT DEFAULT 'Instagram',
-            tag TEXT DEFAULT '',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
     return conn
 
 
@@ -91,60 +74,4 @@ def is_manager_active(session: dict, ttl_minutes: int) -> bool:
     return age_minutes < ttl_minutes
 
 
-async def save_booking_request(
-    client_id: str,
-    name: str,
-    phone: str,
-    email: str,
-    tour: str = "",
-    destination: str = "",
-    budget: str = "",
-    travelers: int = 1,
-) -> None:
-    conn = _get_connection()
-    conn.execute(
-        """INSERT INTO requests (client_id, name, phone, email, tour, destination, budget, travelers)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-        (client_id, name, phone, email, tour, destination, budget, travelers),
-    )
-    conn.commit()
-    conn.close()
-    logger.info("booking_request.saved", client_id=client_id, name=name)
 
-
-async def update_request_status(
-    client_id: str,
-    new_status: str,
-) -> bool:
-    valid_statuses = {"Новая", "В обработке", "Подтверждена", "Оплачена"}
-    if new_status not in valid_statuses:
-        raise ValueError(
-            f"Неверный статус: {new_status}. Допустимые: {', '.join(sorted(valid_statuses))}"
-        )
-
-    conn = _get_connection()
-    cursor = conn.execute(
-        "UPDATE requests SET status = ? WHERE rowid = (SELECT rowid FROM requests WHERE client_id = ? ORDER BY created_at DESC LIMIT 1)",
-        (new_status, client_id),
-    )
-    affected = cursor.rowcount
-    conn.commit()
-    conn.close()
-
-    if affected:
-        logger.info("request.status.updated", client_id=client_id, status=new_status)
-    else:
-        logger.warning("request.status.not_found", client_id=client_id)
-    return affected > 0
-
-
-async def get_requests_by_client(client_id: str) -> list[dict]:
-    conn = _get_connection()
-    rows = conn.execute(
-        """SELECT id, name, phone, email, tour, destination, budget,
-                  travelers, status, source, tag, created_at
-           FROM requests WHERE client_id = ? ORDER BY created_at DESC""",
-        (client_id,),
-    ).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]

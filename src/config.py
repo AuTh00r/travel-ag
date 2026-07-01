@@ -20,11 +20,6 @@ class Settings(BaseSettings):
     instagram_ig_user_id: str = ""
     instagram_app_id: str = ""  # для распознавания собственных эхо (опционально)
 
-    # Google Sheets
-    google_sheets_credentials_file: str = "credentials.json"
-    google_tours_sheet_id: str = ""
-    google_requests_sheet_id: str = ""
-
     # Telegram Bot (уведомления менеджерам)
     telegram_bot_token: str = ""
     telegram_manager_chat_id: str = ""
@@ -33,9 +28,6 @@ class Settings(BaseSettings):
 
     # ChromaDB (RAG FAQ)
     chroma_db_dir: str = "data/chroma"
-
-    # Ссылка на форму бронирования / оплаты
-    booking_form_url: str = ""
 
     # Security
     max_message_length: int = 1000

@@ -5,20 +5,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
-from pydantic import BaseModel
 from structlog import get_logger
 
 from src.channels.instagram import InstagramChannel
 from src.config import settings
 from src.db.sessions import (
-    get_requests_by_client,
     get_session,
     is_manager_active,
-    save_booking_request,
     save_session,
-    update_request_status,
 )
-from src.services.google_sheets import GoogleSheetsService
 
 logger = get_logger()
 
@@ -94,54 +89,6 @@ async def health():
     return {"status": "ok"}
 
 
-# --- API управления заявками ---
-
-
-class StatusUpdateRequest(BaseModel):
-    status: str
-
-
-REQUEST_STATUSES = {"Новая", "В обработке", "Подтверждена", "Оплачена"}
-
-
-@app.get("/api/requests/{client_id}")
-async def get_client_requests(client_id: str):
-    requests = await get_requests_by_client(client_id)
-    if not requests:
-        raise HTTPException(status_code=404, detail="Заявки не найдены")
-    return {"client_id": client_id, "requests": requests}
-
-
-@app.patch("/api/requests/{client_id}/status")
-async def update_request_status_endpoint(client_id: str, body: StatusUpdateRequest):
-    if body.status not in REQUEST_STATUSES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Неверный статус. Допустимые: {', '.join(sorted(REQUEST_STATUSES))}",
-        )
-
-    # Обновить в SQLite
-    updated = await update_request_status(client_id, body.status)
-    if not updated:
-        raise HTTPException(status_code=404, detail="Заявка не найдена")
-
-    # Попробовать обновить в Google Sheets (best-effort)
-    try:
-        requests_data = await get_requests_by_client(client_id)
-        if requests_data:
-            req = requests_data[0]
-            sheets = GoogleSheetsService()
-            await sheets.update_request_status(
-                name=req.get("name", ""),
-                phone=req.get("phone", ""),
-                new_status=body.status,
-            )
-    except Exception:
-        logger.exception("google_sheets.status_update_failed", client_id=client_id)
-
-    return {"client_id": client_id, "status": body.status, "updated": True}
-
-
 @app.post("/api/admin/reset-takeover/{client_id}")
 async def reset_takeover(client_id: str):
     """Сбросить паузу бота для клиента — бот снова отвечает."""
@@ -188,39 +135,9 @@ async def _get_lock(sender_id: str) -> asyncio.Lock:
         return _locks[sender_id]
 
 
-_BOOKING_RE = re.compile(
-    r"===БРОНЬ===\s*\n(.*?)\n===БРОНЬ===", re.DOTALL
-)
 _ESCALATION_RE = re.compile(
     r"===МЕНЕДЖЕР===\s*\n(.*?)\n===МЕНЕДЖЕР===", re.DOTALL
 )
-
-
-def _extract_booking(text: str) -> dict | None:
-    m = _BOOKING_RE.search(text)
-    if not m:
-        return None
-    data = {}
-    for line in m.group(1).strip().split("\n"):
-        if ":" in line:
-            key, val = line.split(":", 1)
-            data[key.strip().lower()] = val.strip()
-    if not data.get("имя") or not data.get("телефон"):
-        return None
-    travelers_raw = data.get("количество", "")
-    try:
-        travelers = int(travelers_raw)
-    except (ValueError, TypeError):
-        travelers = 1
-    return {
-        "name": data.get("имя", ""),
-        "phone": data.get("телефон", ""),
-        "email": data.get("email", ""),
-        "tour": data.get("тур", ""),
-        "destination": data.get("направление", ""),
-        "budget": data.get("бюджет", ""),
-        "travelers": travelers,
-    }
 
 
 def _extract_escalation(text: str) -> dict | None:
@@ -255,7 +172,6 @@ _TEXT_FORMATTING_RE = re.compile(r"\*{1,2}(.+?)\*{1,2}")
 
 
 def _strip_markers(text: str) -> str:
-    text = _BOOKING_RE.sub("", text)
     text = _ESCALATION_RE.sub("", text)
     text = _TEXT_FORMATTING_RE.sub(r"\1", text)
     return text.strip()
@@ -382,52 +298,17 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         response = await llm.ainvoke(messages)
         raw_reply = response.content
 
-        booking_data = _extract_booking(raw_reply)
         escalation_data = _extract_escalation(raw_reply)
         escalation_reason = (escalation_data or {}).get("reason")
         escalation_context = (escalation_data or {}).get("context")
         escalation_name = (escalation_data or {}).get("name")
         escalation_phone = (escalation_data or {}).get("phone")
 
-        if "===БРОНЬ" in raw_reply and not booking_data:
-            logger.warning("marker.parse_failed", marker_type="booking", snippet=raw_reply[-500:])
         if "===МЕНЕДЖЕР" in raw_reply and not escalation_data:
             logger.warning("marker.parse_failed", marker_type="escalation", snippet=raw_reply[-500:])
 
         clean_reply = _strip_markers(raw_reply)
         clean_reply = check_output(clean_reply)
-
-        booking_created = False
-        if booking_data:
-            try:
-                sheets = GoogleSheetsService()
-                await sheets.create_request(**booking_data)
-                booking_created = True
-                logger.info("booking.created", **booking_data)
-            except Exception:
-                logger.exception("booking.create_failed")
-
-            try:
-                await save_booking_request(
-                    client_id=sender_id,
-                    **booking_data,
-                )
-            except Exception:
-                logger.exception("booking.db_save_failed")
-
-        if booking_created:
-            try:
-                notifier = TelegramNotifier()
-                await notifier.notify_booking(
-                    sender_id=sender_id,
-                    instagram_handle=instagram_handle,
-                    client_name=booking_data.get("name"),
-                    client_phone=booking_data.get("phone"),
-                    client_email=booking_data.get("email"),
-                    tour=booking_data.get("tour", ""),
-                )
-            except Exception:
-                logger.exception("booking.notify_failed")
 
         if escalation_reason:
             if escalation_count >= 3:
@@ -439,9 +320,8 @@ async def process_with_ai(sender_id: str, text: str) -> None:
                         sender_id=sender_id,
                         instagram_handle=instagram_handle,
                         context=escalation_context,
-                        client_name=escalation_name or (booking_data or {}).get("name"),
-                        client_phone=escalation_phone or (booking_data or {}).get("phone"),
-                        client_email=(booking_data or {}).get("email"),
+                        client_name=escalation_name,
+                        client_phone=escalation_phone,
                         tag="Нужен звонок",
                     )
                     escalation_count += 1

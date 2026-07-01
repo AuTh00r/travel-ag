@@ -10,7 +10,8 @@ _tours_text: str = ""
 _tours_folder: str = "tours"
 
 _URL_RE = re.compile(r"https?://docs\.google\.com\S+")
-_KEY_FIELDS = ("Маршрут:", "Даты:", "Стоимость:", "Тип отдыха:", "Виза:")
+_BOOKING_URL_RE = re.compile(r"Ссылка на бронирование\s*[-–—:]\s*(https?://\S+)")
+_KEY_FIELDS = ("Маршрут:", "Даты:", "Стоимость:", "Тип отдыха:", "Виза:", "Куда:", "Когда:", "Сколько стоит:")
 
 
 def _extract_tour_section(filename: str, paragraphs: list[str]) -> str:
@@ -20,6 +21,11 @@ def _extract_tour_section(filename: str, paragraphs: list[str]) -> str:
     tour_url = url_match.group(0) if url_match else ""
     if tour_url:
         text = _URL_RE.sub("", text).strip()
+
+    booking_url_match = _BOOKING_URL_RE.search(text)
+    booking_url = booking_url_match.group(1) if booking_url_match else ""
+    if booking_url:
+        text = _BOOKING_URL_RE.sub("", text).strip()
 
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = text.replace("ПОДРОБНАЯ ИНФОРМАЦИЯ И БРОНИРОВАНИЕ НА САЙТЕ", "").strip()
@@ -38,6 +44,8 @@ def _extract_tour_section(filename: str, paragraphs: list[str]) -> str:
     parts = [f"=== ТУР: {filename} ==="]
     if tour_url:
         parts.append(f"Ссылка на тур: {tour_url}")
+    if booking_url:
+        parts.append(f"Ссылка на бронирование: {booking_url}")
     parts.extend(key_lines)
     if other_lines:
         parts.append("")
@@ -50,14 +58,27 @@ def _split_tours(paragraphs: list[str]) -> list[list[str]]:
     blocks: list[list[str]] = []
     current: list[str] = []
     for p in paragraphs:
-        if _URL_RE.search(p) and current:
-            current.append(p)
+        current.append(p)
+        # Split on booking URL (preferred) — it's the last field per tour
+        if _BOOKING_URL_RE.search(p) and len(current) > 1:
             blocks.append(current)
             current = []
-        else:
-            current.append(p)
+    # Fallback: if no booking URLs found, split on Google Docs URL
+    if not blocks:
+        current = []
+        for p in paragraphs:
+            if _URL_RE.search(p) and current:
+                current.append(p)
+                blocks.append(current)
+                current = []
+            else:
+                current.append(p)
+        if current:
+            blocks.append(current)
+        return blocks
+    # Trailing content after last booking URL belongs to last tour
     if current:
-        blocks.append(current)
+        blocks[-1].extend(current)
     return blocks
 
 

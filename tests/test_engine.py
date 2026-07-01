@@ -2,81 +2,10 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.main import _extract_booking, _extract_escalation, _strip_markers
+from src.main import _extract_escalation, _strip_markers
 
 
 # --- Marker parsing ---
-
-
-class TestExtractBooking:
-    def test_valid_booking(self):
-        text = """Ответ клиенту...
-
-===БРОНЬ===
-Имя: Иван
-Телефон: +375291234567
-Email: ivan@mail.com
-Тур: Анталья
-Направление: Турция
-Бюджет: 2000$
-Количество: 2
-===БРОНЬ==="""
-        result = _extract_booking(text)
-        assert result == {
-            "name": "Иван",
-            "phone": "+375291234567",
-            "email": "ivan@mail.com",
-            "tour": "Анталья",
-            "destination": "Турция",
-            "budget": "2000$",
-            "travelers": 2,
-        }
-
-    def test_no_booking(self):
-        assert _extract_booking("Просто ответ") is None
-
-    def test_missing_required_fields(self):
-        text = """===БРОНЬ===
-Имя: Иван
-===БРОНЬ==="""
-        assert _extract_booking(text) is None
-
-    def test_booking_minimal_fields(self):
-        text = """===БРОНЬ===
-Имя: Иван
-Телефон: +375291234567
-===БРОНЬ==="""
-        result = _extract_booking(text)
-        assert result == {
-            "name": "Иван",
-            "phone": "+375291234567",
-            "email": "",
-            "tour": "",
-            "destination": "",
-            "budget": "",
-            "travelers": 1,
-        }
-
-    def test_booking_non_numeric_travelers(self):
-        text = """===БРОНЬ===
-Имя: Анна
-Телефон: +375331111111
-Email: anna@mail.com
-Тур: Париж
-Направление: Франция
-Бюджет: 3000$
-Количество: двое
-===БРОНЬ==="""
-        result = _extract_booking(text)
-        assert result == {
-            "name": "Анна",
-            "phone": "+375331111111",
-            "email": "anna@mail.com",
-            "tour": "Париж",
-            "destination": "Франция",
-            "budget": "3000$",
-            "travelers": 1,
-        }
 
 
 class TestExtractEscalation:
@@ -111,23 +40,11 @@ class TestExtractEscalation:
 
 
 class TestStripMarkers:
-    def test_strips_both_markers(self):
-        text = """Привет! Вот тур.
-
-===БРОНЬ===
-Имя: Иван
-===БРОНЬ===
-
-Хорошего дня!
-
-===МЕНЕДЖЕР===
-Причина: тест
-===МЕНЕДЖЕР==="""
+    def test_strips_escalation_marker(self):
+        text = "Привет!\n\n===МЕНЕДЖЕР===\nПричина: тест\n===МЕНЕДЖЕР==="
         result = _strip_markers(text)
-        assert "===БРОНЬ===" not in result
         assert "===МЕНЕДЖЕР===" not in result
-        assert "Привет! Вот тур." in result
-        assert "Хорошего дня!" in result
+        assert "Привет!" in result
 
 
 # --- Prompt building ---
@@ -213,52 +130,3 @@ async def process_with(sender_id: str, text: str) -> None:
     from src.main import process_with_ai
 
     await process_with_ai(sender_id, text)
-
-
-@pytest.mark.asyncio
-async def test_process_with_ai_booking_flow():
-    """Проверяет, что process_with_ai создаёт заявку при ===БРОНЬ=== маркере."""
-    fake_response = AsyncMock()
-    fake_response.content = """Отличный выбор! Бронь подтверждаю.
-
-===БРОНЬ===
-Имя: Иван
-Телефон: +375291234567
-Email: ivan@mail.com
-Тур: Анталья
-===БРОНЬ==="""
-
-    fake_llm = AsyncMock()
-    fake_llm.ainvoke = AsyncMock(return_value=fake_response)
-
-    mock_sheets = AsyncMock()
-    sheets_create_request = AsyncMock()
-    mock_sheets.create_request = sheets_create_request
-
-    patches = [
-        patch("src.services.llm.get_llm", return_value=fake_llm),
-        patch("src.services.tour_loader.get_tours_text", return_value=""),
-        patch("src.db.faq_db.search_faq", return_value=[]),
-        patch("src.main.save_session"),
-        patch("src.main.instagram.send_message"),
-        patch("src.main.instagram.get_username", return_value=None),
-        patch("src.main.GoogleSheetsService", return_value=mock_sheets),
-        patch("src.main.save_booking_request"),
-    ]
-    for p in patches:
-        p.start()
-
-    try:
-        await process_with("test_user_2", "Да, записывайте")
-        sheets_create_request.assert_awaited_once_with(
-            name="Иван",
-            phone="+375291234567",
-            email="ivan@mail.com",
-            tour="Анталья",
-            destination="",
-            budget="",
-            travelers=1,
-        )
-    finally:
-        for p in patches:
-            p.stop()
