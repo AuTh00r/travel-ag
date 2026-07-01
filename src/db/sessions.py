@@ -60,6 +60,7 @@ def _new_session(client_id: str) -> dict:
         "client_id": client_id,
         "escalation_count": 0,
         "manager_last_at": None,
+        "last_message_at": None,
     }
 
 

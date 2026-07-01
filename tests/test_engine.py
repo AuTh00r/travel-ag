@@ -83,12 +83,28 @@ class TestExtractEscalation:
     def test_extract_escalation_with_context(self):
         text = "ответ\n\n===МЕНЕДЖЕР===\nПричина: просит менеджера\nКонтекст: ищет тур в Турцию\n===МЕНЕДЖЕР==="
         result = _extract_escalation(text)
-        assert result == ("просит менеджера", "ищет тур в Турцию")
+        assert result == {
+            "reason": "просит менеджера",
+            "context": "ищет тур в Турцию",
+        }
 
     def test_extract_escalation_without_context(self):
         text = "ответ\n\n===МЕНЕДЖЕР===\nПричина: просит менеджера\n===МЕНЕДЖЕР==="
         result = _extract_escalation(text)
-        assert result == ("просит менеджера", "просит менеджера")
+        assert result == {
+            "reason": "просит менеджера",
+            "context": "просит менеджера",
+        }
+
+    def test_extract_escalation_with_name_and_phone(self):
+        text = "ответ\n\n===МЕНЕДЖЕР===\nПричина: просит менеджера\nКонтекст: ищет тур\nИмя: Иван\nТелефон: +375291234567\n===МЕНЕДЖЕР==="
+        result = _extract_escalation(text)
+        assert result == {
+            "reason": "просит менеджера",
+            "context": "ищет тур",
+            "name": "Иван",
+            "phone": "+375291234567",
+        }
 
     def test_extract_escalation_no_marker(self):
         assert _extract_escalation("обычный ответ") is None

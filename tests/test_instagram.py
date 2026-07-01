@@ -801,7 +801,7 @@ class TestNonTextProcessing:
         mock_send.assert_awaited_once()
         ack_text = mock_send.await_args[0][1]
         assert "Спасибо" in ack_text
-        assert "передали ваш вопрос менеджеру" in ack_text
+        assert "передал ваш вопрос менеджеру" in ack_text
 
         # Менеджер уведомлён
         mock_notifier.notify_manager.assert_awaited_once()

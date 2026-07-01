@@ -223,29 +223,32 @@ def _extract_booking(text: str) -> dict | None:
     }
 
 
-def _extract_escalation(text: str) -> tuple[str, str] | None:
-    """Парсит ===МЕНЕДЖЕР=== и возвращает (причина, контекст).
+def _extract_escalation(text: str) -> dict | None:
+    """Парсит ===МЕНЕДЖЕР=== и возвращает dict с ключами reason, context, name, phone.
 
-    Контекст опционален — если не заполнен, дублирует причину.
     Если маркера нет — None.
     """
     m = _ESCALATION_RE.search(text)
     if not m:
         return None
-    reason = ""
-    context = ""
+    result: dict[str, str] = {}
     for line in m.group(1).strip().split("\n"):
         if ":" not in line:
             continue
         key, val = line.split(":", 1)
         key_s = key.strip().lower()
         if key_s == "причина":
-            reason = val.strip()
+            result["reason"] = val.strip()
         elif key_s == "контекст":
-            context = val.strip()
-    if not reason:
-        reason = m.group(1).strip()
-    return reason, context or reason
+            result["context"] = val.strip()
+        elif key_s == "имя":
+            result["name"] = val.strip()
+        elif key_s == "телефон":
+            result["phone"] = val.strip()
+    if not result.get("reason"):
+        result["reason"] = m.group(1).strip()
+    result.setdefault("context", result["reason"])
+    return result
 
 
 _TEXT_FORMATTING_RE = re.compile(r"\*{1,2}(.+?)\*{1,2}")
@@ -286,6 +289,28 @@ def _guard_reply(reason: str) -> str:
         "injection": "Я могу помочь только с вопросами о наших турах 😊",
     }
     return replies.get(reason, "Не понял вопрос. Попробуйте переформулировать!")
+
+
+def _should_greet(prev_last_iso: str | None, is_first: bool) -> tuple[bool, bool]:
+    """Определяет флаги приветствия.
+
+    Возвращает (should_greet, is_first_message).
+    - Первое сообщение в сессии → приветствуем, это первое сообщение.
+    - Возврат после паузы ≥12ч → приветствуем, НО не первое сообщение (имя не спрашиваем).
+    - Продолжение диалога (<12ч) → не приветствуем.
+    """
+    if is_first or prev_last_iso is None:
+        return True, True
+    try:
+        ts = datetime.fromisoformat(prev_last_iso)
+    except (ValueError, TypeError):
+        return True, True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    hours_since = (datetime.now(timezone.utc) - ts).total_seconds() / 3600
+    if hours_since >= 12:
+        return True, False
+    return False, False
 
 
 async def process_with_ai(sender_id: str, text: str) -> None:
@@ -342,9 +367,15 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         escalation_count = session.get("escalation_count", 0)
         from datetime import datetime as dt
         current_time = dt.now().strftime("%H:%M")
+        is_first = not history
+        should_greet, is_first_msg = _should_greet(
+            session.get("last_message_at"), is_first,
+        )
         messages = build_full_prompt(
             tours_text, faq_context, history, text, escalation_count,
             current_time=current_time,
+            should_greet=should_greet,
+            is_first_message=is_first_msg,
         )
 
         llm = get_llm()
@@ -352,12 +383,15 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         raw_reply = response.content
 
         booking_data = _extract_booking(raw_reply)
-        extracted = _extract_escalation(raw_reply)
-        escalation_reason, escalation_context = extracted if extracted else (None, None)
+        escalation_data = _extract_escalation(raw_reply)
+        escalation_reason = (escalation_data or {}).get("reason")
+        escalation_context = (escalation_data or {}).get("context")
+        escalation_name = (escalation_data or {}).get("name")
+        escalation_phone = (escalation_data or {}).get("phone")
 
         if "===БРОНЬ" in raw_reply and not booking_data:
             logger.warning("marker.parse_failed", marker_type="booking", snippet=raw_reply[-500:])
-        if "===МЕНЕДЖЕР" in raw_reply and not extracted:
+        if "===МЕНЕДЖЕР" in raw_reply and not escalation_data:
             logger.warning("marker.parse_failed", marker_type="escalation", snippet=raw_reply[-500:])
 
         clean_reply = _strip_markers(raw_reply)
@@ -405,8 +439,8 @@ async def process_with_ai(sender_id: str, text: str) -> None:
                         sender_id=sender_id,
                         instagram_handle=instagram_handle,
                         context=escalation_context,
-                        client_name=(booking_data or {}).get("name"),
-                        client_phone=(booking_data or {}).get("phone"),
+                        client_name=escalation_name or (booking_data or {}).get("name"),
+                        client_phone=escalation_phone or (booking_data or {}).get("phone"),
                         client_email=(booking_data or {}).get("email"),
                         tag="Нужен звонок",
                     )
@@ -418,6 +452,7 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         history.append({"role": "assistant", "content": clean_reply})
         session["history"] = history
         session["escalation_count"] = escalation_count
+        session["last_message_at"] = datetime.now(timezone.utc).isoformat()
         await save_session(sender_id, session)
 
         for chunk in _split_reply(clean_reply):
@@ -500,8 +535,8 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
                         sender_id=sender_id,
                     )
                 client_reply = (
-                    "Спасибо! Мы не видим содержимое вложения, "
-                    "поэтому передали ваш вопрос менеджеру.\n"
+                    "Спасибо! Я не вижу содержимое вложения, "
+                    "поэтому передал ваш вопрос менеджеру.\n"
                     "Он посмотрит и поможет 🙌"
                 )
             else:
@@ -527,6 +562,7 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
             history.append({"role": "assistant", "content": client_reply})
             session["history"] = history
             session["escalation_count"] = escalation_count
+            session["last_message_at"] = datetime.now(timezone.utc).isoformat()
             await save_session(sender_id, session)
 
         # 4. Локальная блокировка отпущена.
