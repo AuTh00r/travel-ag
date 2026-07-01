@@ -6,7 +6,7 @@
 - SSH-доступ к VPS (Ubuntu 24.04 LTS)
 - Доступ к API: DeepSeek, Meta Graph API (Instagram), Google Sheets, Telegram Bot
 - Git
-- Docker / Docker Compose (для контейнерного запуска)
+- (Опционально) Docker / Docker Compose
 
 ## Локальная разработка
 
@@ -27,11 +27,7 @@ pip install -r requirements.txt
 cp .env.example .env
 # Отредактировать .env — заполнить реальные ключи
 
-# 5. Подготовить credentials
-# Скачать credentials.json из Google Cloud Console (Service Account)
-# Поделиться Google Sheets с email Service Account
-
-# 6. Запустить сервер
+# 5. Запустить сервер
 uvicorn src.main:app --reload --host 0.0.0.0 --port 8000
 
 # 7. Проверить health
@@ -43,9 +39,9 @@ pytest tests/ -q
 ruff check src tests
 ```
 
-Актуальный тестовый набор: 117 тестов в 8 файлах. `pyproject.toml` включает
-`asyncio_mode = "auto"`, а `conftest.py` добавляет корень проекта в `sys.path`
-и объявляет Playwright fixtures `browser` / `page`.
+Актуальный тестовый набор: 90 тестов в 7 файлах. `pyproject.toml` включает
+`asyncio_mode = "auto"`, а `conftest.py` добавляет корень проекта в `sys.path`.
+Playwright не требуется — тесты без него.
 
 ## Деплой на Timeweb Cloud VPS
 
@@ -61,30 +57,15 @@ ssh-copy-id -i ~/.ssh/id_ed25519_travelbot root@<IP-адрес-VPS>
 # Или добавить публичный ключ в панели Timeweb Cloud
 ```
 
-### 2. Подготовить сервер
+### 2. Развернуть проект
 
 ```bash
 ssh -i ~/.ssh/id_ed25519_travelbot root@<IP-адрес-VPS>
 
-# Обновление
-apt update && apt upgrade -y
-
 # Python 3.11
-apt install -y python3.11 python3.11-venv python3.11-dev git nginx curl
+apt update && apt upgrade -y
+apt install -y python3.11 python3.11-venv python3.11-dev git curl
 
-# Certbot (Let's Encrypt)
-apt install -y certbot python3-certbot-nginx
-
-# Брандмауэр
-ufw allow 22/tcp
-ufw allow 80/tcp
-ufw allow 443/tcp
-ufw --force enable
-```
-
-### 3. Развернуть проект
-
-```bash
 # Клонировать
 git clone https://github.com/AuTh00r/travel-ag.git /opt/travel-agent-bot
 cd /opt/travel-agent-bot
@@ -97,37 +78,6 @@ pip install -r requirements.txt
 # Настроить .env
 cp .env.example .env
 nano .env  # вставить реальные ключи
-
-# Загрузить credentials.json для Google Sheets
-nano credentials.json  # вставить содержимое JSON-ключа Service Account
-```
-
-### 4. Настроить systemd сервис
-
-Создать `/etc/systemd/system/travel-bot.service`:
-
-```ini
-[Unit]
-Description=Travel Agent Bot
-After=network.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=/opt/travel-agent-bot
-ExecStart=/opt/travel-agent-bot/.venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000
-Restart=always
-RestartSec=5
-Environment=PYTHONPATH=/opt/travel-agent-bot
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-systemctl daemon-reload
-systemctl enable --now travel-bot
-systemctl status travel-bot  # проверить
 ```
 
 ### 5. Настроить DuckDNS (бесплатный домен)
@@ -260,13 +210,7 @@ POST на webhook **только от пользователей, добавле
 **Быстрая проверка, достукивается ли Meta вообще:**
 
 ```bash
-# Возвращает received_ever и время последнего POST от Meta (in-memory, без логов).
-# Если received_ever=false — POST никогда не приходил (приложение не Live
-# и пользователь не в App Roles). Сбрасывается при рестарте бота.
 curl https://<ВАШ_ДОМЕН>.duckdns.org/webhook/instagram/last_seen
-
-# Логи в реальном времени:
-journalctl -u travel-bot -f | grep instagram
 ```
 
 > ⚠️ **Важно для прода:** `INSTAGRAM_APP_SECRET` обязан быть задан в `.env` на VPS.
@@ -276,30 +220,14 @@ journalctl -u travel-bot -f | grep instagram
 
 ## Структура данных
 
-- **Google Sheets «Туры»** — база доступных туров (читается ботом)
-- **Google Sheets «Заявки»** — заявки клиентов (записываются ботом)
 - **SQLite `data/sessions.db`** — сессии диалогов (создаётся автоматически)
 - **ChromaDB `data/chroma/`** — векторная БД FAQ (создаётся при старте из `data/faq/*.txt`)
 
 ## Мониторинг
 
 ```bash
-# Логи бота
-journalctl -u travel-bot -f
-
-# Состояние бота
-systemctl status travel-bot
-
 # Health
 curl https://<ВАШ_ДОМЕН>.duckdns.org/health
-
-# Статусы заявок
-curl https://<ВАШ_ДОМЕН>.duckdns.org/api/requests/<client_id>
-
-# Обновление статуса
-curl -X PATCH https://<ВАШ_ДОМЕН>.duckdns.org/api/requests/<client_id>/status \
-  -H "Content-Type: application/json" \
-  -d '{"status": "В обработке"}'
 ```
 
 ## Обновление кода на VPS
@@ -312,5 +240,8 @@ git pull
 source .venv/bin/activate
 pip install -r requirements.txt
 pytest tests/ -q
-systemctl restart travel-bot
+
+# Перезапустить бота
+# Если через systemd: systemctl restart travel-bot
+# Если через screen/tmux: pkill -f "uvicorn"; nohup .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 &
 ```

@@ -105,13 +105,7 @@ curl https://travelagenttest.duckdns.org/health
 curl https://travelagenttest.duckdns.org/webhook/instagram/last_seen
 ```
 
-## Docker
 
-```bash
-docker compose up --build
-```
-
-Контейнер читает `.env`, монтирует `./data` и `./credentials.json`.
 
 ## Ручная проверка non-text обработки
 
