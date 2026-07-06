@@ -1,5 +1,12 @@
 # Instagram Graph API — Справочник интеграции
 
+> ⚠️ **УСТАРЕЛО.** Описывает старую (LangGraph) архитектуру и неточные
+> значения — версия API `v21.0` (в коде `v25.0`), лимит сообщения 2000
+> символов (в коде 1000), `src/ai/engine.py`/`build_graph()` не существуют
+> (удалены в рефакторинге `35baecd`). За актуальным описанием — в
+> `docs/ARCHITECTURE.md` и напрямую в `src/channels/instagram.py`. Оставлено
+> для истории, см. `docs/PLAN-graph-api-resilience.md` (Задача 5).
+
 ## Общие сведения
 
 Instagram Business API работает через Facebook Graph API. Все запросы идут к

@@ -124,8 +124,20 @@ Instagram DM → POST /webhook/instagram (main.py)
   `kind="user_non_text"` (вложение/пост/story reply/referral) и `kind="manager"` (echo менеджера)
 - `_extract_non_text_metadata()` — детектирует `attachments`, `reply_to`, `referral`
   и возвращает структуру с `types`, `summary`, `has_text`, `text`, `raw_keys`
-- `send_message()` — отправка через Graph API и сохранение `message_id` для echo-фильтра
+- `send_message()` — отправка через Graph API; распознаёт rate-limit Meta
+  (`error.code` в теле ответа даже при HTTP 200: `4/17/32/613/80002`) и кидает
+  `InstagramRateLimitError` с `retry_after_seconds` из заголовка
+  `X-Business-Use-Case-Usage`, если он есть; при успехе сохраняет `message_id`
+  для echo-фильтра (см. `docs/PLAN-graph-api-resilience.md`)
+- `_sent_mids` — `_MidSet`, множество с FIFO-эвикцией по размеру (не обычный
+  `set`, у которого `.pop()` удаляет произвольный элемент)
 - `get_username()` — best-effort username/name с in-memory кешем
+
+Провал `send_message()` во всех трёх местах вызова в `main.py`
+(`process_with_ai`, `_process_non_text_safely`, `_process_safely`) теперь
+логируется структурированным `logger.error("instagram.message.lost", ...,
+reason="rate_limited"|"other")` — раньше сообщение клиенту терялось молча
+под обычным `logger.exception`.
 
 ## Маркеры действий LLM
 

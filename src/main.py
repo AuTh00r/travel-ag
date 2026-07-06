@@ -14,6 +14,7 @@ from src.db.sessions import (
     is_manager_active,
     save_session,
 )
+from src.exceptions import InstagramRateLimitError
 
 logger = get_logger()
 
@@ -338,8 +339,19 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         for chunk in _split_reply(clean_reply):
             try:
                 await instagram.send_message(sender_id, chunk)
+            except InstagramRateLimitError as exc:
+                logger.warning("instagram.message.send_failed", sender_id=sender_id)
+                logger.error(
+                    "instagram.message.lost",
+                    sender_id=sender_id,
+                    reason="rate_limited",
+                    error_code=exc.error_code,
+                    retry_after_seconds=exc.retry_after_seconds,
+                )
+                break
             except Exception:
                 logger.exception("instagram.message.send_failed", sender_id=sender_id)
+                logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
                 break
 
 
@@ -460,7 +472,20 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
             return
 
         # 5. Ответить клиенту
-        await instagram.send_message(sender_id, client_reply)
+        try:
+            await instagram.send_message(sender_id, client_reply)
+        except InstagramRateLimitError as exc:
+            logger.warning("instagram.message.send_failed", sender_id=sender_id)
+            logger.error(
+                "instagram.message.lost",
+                sender_id=sender_id,
+                reason="rate_limited",
+                error_code=exc.error_code,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
+        except Exception:
+            logger.exception("instagram.message.send_failed", sender_id=sender_id)
+            logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
     except Exception:
         logger.exception("instagram.non_text.processing.failed", sender_id=sender_id)
         try:
@@ -469,8 +494,18 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
                 "Произошла техническая ошибка. "
                 "Наши специалисты уже работают над этим. Попробуйте позже! 🛠️",
             )
+        except InstagramRateLimitError as exc:
+            logger.warning("instagram.message.send_failed", sender_id=sender_id)
+            logger.error(
+                "instagram.message.lost",
+                sender_id=sender_id,
+                reason="rate_limited",
+                error_code=exc.error_code,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
         except Exception:
             logger.exception("instagram.message.send_failed", sender_id=sender_id)
+            logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
 
 
 async def _process_safely(sender_id: str, text: str) -> None:
@@ -489,8 +524,18 @@ async def _process_safely(sender_id: str, text: str) -> None:
                 "Произошла техническая ошибка. "
                 "Наши специалисты уже работают над этим. Попробуйте позже! 🛠️",
             )
+        except InstagramRateLimitError as exc:
+            logger.warning("instagram.message.send_failed", sender_id=sender_id)
+            logger.error(
+                "instagram.message.lost",
+                sender_id=sender_id,
+                reason="rate_limited",
+                error_code=exc.error_code,
+                retry_after_seconds=exc.retry_after_seconds,
+            )
         except Exception:
             logger.exception("instagram.message.send_failed", sender_id=sender_id)
+            logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
 
 
 @app.post("/webhook/instagram")

@@ -262,6 +262,135 @@ class TestInstagramChannelSend:
             await channel.send_message("12345", "Hello")
 
 
+class TestRateLimitDetection:
+    """InstagramChannel.send_message — распознавание rate-limit от Meta.
+
+    Meta не всегда сигнализирует троттлинг отдельным HTTP-статусом — код
+    ошибки может прийти в JSON-теле при формально успешном HTTP 200, который
+    response.raise_for_status() не поймает. См. docs/PLAN-graph-api-resilience.md.
+    """
+
+    @pytest.mark.asyncio
+    @patch("src.channels.instagram.httpx.AsyncClient")
+    async def test_error_code_in_body_raises_rate_limit_error(self, mock_client):
+        from src.channels.instagram import InstagramChannel
+        from src.exceptions import InstagramRateLimitError
+
+        settings.instagram_access_token = "test_token"
+
+        mock_response = AsyncMock()
+        mock_response.json = Mock(
+            return_value={"error": {"code": 80002, "message": "Application limit reached"}}
+        )
+        mock_response.headers = {}
+        mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+            return_value=mock_response
+        )
+
+        channel = InstagramChannel()
+        with pytest.raises(InstagramRateLimitError) as exc_info:
+            await channel.send_message("12345", "Hello")
+
+        assert exc_info.value.error_code == 80002
+        assert exc_info.value.retry_after_seconds is None
+
+    @pytest.mark.asyncio
+    @patch("src.channels.instagram.httpx.AsyncClient")
+    async def test_retry_after_extracted_from_usage_header(self, mock_client):
+        import json
+
+        from src.channels.instagram import InstagramChannel
+        from src.exceptions import InstagramRateLimitError
+
+        settings.instagram_access_token = "test_token"
+
+        usage_header = json.dumps(
+            {
+                "17841400000000000": [
+                    {
+                        "type": "instagram",
+                        "call_count": 100,
+                        "total_time": 100,
+                        "total_cputime": 50,
+                        "estimated_time_to_regain_access": 15,
+                    }
+                ]
+            }
+        )
+        mock_response = AsyncMock()
+        mock_response.json = Mock(return_value={"error": {"code": 80002}})
+        mock_response.headers = {"x-business-use-case-usage": usage_header}
+        mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+            return_value=mock_response
+        )
+
+        channel = InstagramChannel()
+        with pytest.raises(InstagramRateLimitError) as exc_info:
+            await channel.send_message("12345", "Hello")
+
+        assert exc_info.value.retry_after_seconds == 15 * 60
+
+    @pytest.mark.asyncio
+    @patch("src.channels.instagram.httpx.AsyncClient")
+    async def test_no_error_code_does_not_raise_rate_limit(self, mock_client):
+        """Обычный успешный ответ (без error) не должен приниматься за rate limit."""
+        from src.channels.instagram import InstagramChannel
+
+        InstagramChannel._sent_mids.clear()
+        settings.instagram_access_token = "test_token"
+
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = AsyncMock()
+        mock_response.json = Mock(return_value={"message_id": "mid_ok_1"})
+        mock_response.headers = {}
+        mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+            return_value=mock_response
+        )
+
+        channel = InstagramChannel()
+        mid = await channel.send_message("12345", "Hello")
+        assert mid == "mid_ok_1"
+
+
+class TestMidSetEviction:
+    """_MidSet — FIFO-эвикция вместо произвольной (баг set.pop())."""
+
+    def test_pop_oldest_removes_first_inserted(self):
+        from src.channels.instagram import _MidSet
+
+        s = _MidSet()
+        s.add("a")
+        s.add("b")
+        s.add("c")
+
+        oldest = s.pop_oldest()
+
+        assert oldest == "a"
+        assert "a" not in s
+        assert "b" in s
+        assert "c" in s
+        assert len(s) == 2
+
+    def test_add_and_contains(self):
+        from src.channels.instagram import _MidSet
+
+        s = _MidSet()
+        assert "x" not in s
+        s.add("x")
+        assert "x" in s
+        assert len(s) == 1
+
+    def test_clear(self):
+        from src.channels.instagram import _MidSet
+
+        s = _MidSet()
+        s.add("a")
+        s.add("b")
+        s.clear()
+        assert len(s) == 0
+        assert "a" not in s
+
+
 class TestGetUsername:
     @pytest.mark.asyncio
     async def test_get_username_success(self):
@@ -902,3 +1031,91 @@ class TestNonTextProcessing:
 
         # Ничего не отправлено
         mock_send.assert_not_awaited()
+
+
+class TestMessageLostLogging:
+    """Потеря сообщения клиенту (send_message падает) должна быть видна в логах.
+
+    Раньше такие сбои просто логировались через logger.exception и терялись
+    молча. Теперь при провале отправки должен появиться структурированный
+    лог instagram.message.lost с reason ("rate_limited" или "other"), чтобы
+    это было видно в мониторинге. См. docs/PLAN-graph-api-resilience.md.
+    """
+
+    @pytest.mark.asyncio
+    @patch("src.channels.instagram.InstagramChannel.send_message")
+    @patch("src.main.process_with_ai")
+    async def test_process_safely_logs_lost_on_rate_limit(self, mock_process, mock_send):
+        from structlog.testing import capture_logs
+
+        from src.exceptions import InstagramRateLimitError
+        from src.main import _process_safely
+
+        mock_process.side_effect = Exception("ai boom")
+        mock_send.side_effect = InstagramRateLimitError(
+            "limited", error_code=80002, retry_after_seconds=42.0
+        )
+
+        with capture_logs() as logs:
+            await _process_safely("CLIENT_LOST_1", "привет")
+
+        lost = [e for e in logs if e.get("event") == "instagram.message.lost"]
+        assert len(lost) == 1
+        assert lost[0]["reason"] == "rate_limited"
+        assert lost[0]["error_code"] == 80002
+        assert lost[0]["retry_after_seconds"] == 42.0
+
+    @pytest.mark.asyncio
+    @patch("src.channels.instagram.InstagramChannel.send_message")
+    @patch("src.main.process_with_ai")
+    async def test_process_safely_logs_lost_on_other_error(self, mock_process, mock_send):
+        from structlog.testing import capture_logs
+
+        from src.main import _process_safely
+
+        mock_process.side_effect = Exception("ai boom")
+        mock_send.side_effect = RuntimeError("network down")
+
+        with capture_logs() as logs:
+            await _process_safely("CLIENT_LOST_2", "привет")
+
+        lost = [e for e in logs if e.get("event") == "instagram.message.lost"]
+        assert len(lost) == 1
+        assert lost[0]["reason"] == "other"
+
+    @pytest.mark.asyncio
+    @patch("src.channels.instagram.InstagramChannel.get_username", new=AsyncMock(return_value="test_user"))
+    @patch("src.services.tour_loader.get_tours_text", return_value="")
+    @patch("src.services.llm.get_llm")
+    @patch("src.main.save_session", new=AsyncMock())
+    @patch("src.main.get_session")
+    @patch("src.channels.instagram.InstagramChannel.send_message")
+    async def test_process_with_ai_logs_lost_on_send_failure(
+        self,
+        mock_send,
+        mock_get_session,
+        mock_llm,
+        mock_tours,
+    ):
+        from types import SimpleNamespace
+
+        from structlog.testing import capture_logs
+
+        from src.exceptions import InstagramRateLimitError
+        from src.main import process_with_ai
+
+        mock_get_session.return_value = {"history": [], "escalation_count": 0}
+        mock_llm.return_value.ainvoke = AsyncMock(
+            return_value=SimpleNamespace(content="Привет! Вот варианты туров.")
+        )
+        mock_send.side_effect = InstagramRateLimitError(
+            "limited", error_code=4, retry_after_seconds=5.0
+        )
+
+        with capture_logs() as logs:
+            await process_with_ai("CLIENT_LOST_3", "хочу тур")
+
+        lost = [e for e in logs if e.get("event") == "instagram.message.lost"]
+        assert len(lost) == 1
+        assert lost[0]["reason"] == "rate_limited"
+        assert lost[0]["error_code"] == 4

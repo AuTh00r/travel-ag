@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import json
 import re
 
 import httpx
@@ -8,9 +9,41 @@ from structlog import get_logger
 
 from src.channels.base import ChannelBase
 from src.config import settings
-from src.exceptions import InstagramError
+from src.exceptions import InstagramError, InstagramRateLimitError
 
 logger = get_logger()
+
+
+class _MidSet:
+    """Множество message_id с гарантированной FIFO-эвикцией по размеру.
+
+    Обычный `set.pop()` удаляет произвольный элемент (по хешу), а не самый
+    старый — здесь же важно вытеснять именно старые записи. Реализовано
+    поверх dict, где порядок вставки гарантирован (Python 3.7+), как уже
+    сделано для `_username_cache` в этом файле.
+    """
+
+    __slots__ = ("_data",)
+
+    def __init__(self) -> None:
+        self._data: dict[str, None] = {}
+
+    def add(self, item: str) -> None:
+        self._data[item] = None
+
+    def clear(self) -> None:
+        self._data.clear()
+
+    def pop_oldest(self) -> str:
+        oldest = next(iter(self._data))
+        del self._data[oldest]
+        return oldest
+
+    def __contains__(self, item: object) -> bool:
+        return item in self._data
+
+    def __len__(self) -> int:
+        return len(self._data)
 
 
 class InstagramChannel(ChannelBase):
@@ -19,8 +52,13 @@ class InstagramChannel(ChannelBase):
     BASE_URL = "https://graph.facebook.com/v25.0"
     _username_cache: dict[str, str] = {}
     _USERNAME_CACHE_MAX = 500
-    _sent_mids: set[str] = set()
+    _sent_mids: _MidSet = _MidSet()
     _SENT_MIDS_MAX = 10_000
+
+    # Коды ошибок Meta, сигнализирующие rate-limit/throttling (проверено по
+    # docs/graph-api/overview/rate-limiting, см. docs/PLAN-graph-api-resilience.md):
+    # 4/17/32/613 — platform-level, 80002 — Business Use Case лимит для Instagram.
+    _RATE_LIMIT_CODES = {4, 17, 32, 613, 80002}
 
     def verify_signature(self, raw_body: bytes, signature_header: str | None) -> bool:
         if not settings.instagram_app_secret:
@@ -256,27 +294,111 @@ class InstagramChannel(ChannelBase):
         async with httpx.AsyncClient(timeout=30) as client:
             try:
                 response = await client.post(url, params=params, json=payload)
+            except httpx.RequestError as exc:
+                raise InstagramError(f"Сетевая ошибка при отправке: {exc}") from exc
+
+            # Meta не всегда сигнализирует троттлинг отдельным HTTP-статусом —
+            # код ошибки может прийти в JSON-теле при формально успешном 200.
+            # raise_for_status() ниже такое не поймает, поэтому проверяем сначала.
+            rate_limit_exc = self._check_rate_limit(response)
+            if rate_limit_exc:
+                logger.warning(
+                    "instagram.rate_limited",
+                    recipient_id=recipient_id,
+                    error_code=rate_limit_exc.error_code,
+                    retry_after_seconds=rate_limit_exc.retry_after_seconds,
+                )
+                raise rate_limit_exc
+
+            try:
                 response.raise_for_status()
-                mid = None
-                try:
-                    data = response.json()
-                    if isinstance(data, dict):
-                        mid = data.get("message_id")
-                except Exception:
-                    mid = None
-                if mid:
-                    self._sent_mids.add(mid)
-                    if len(self._sent_mids) > self._SENT_MIDS_MAX:
-                        for _ in range(len(self._sent_mids) - self._SENT_MIDS_MAX):
-                            self._sent_mids.pop()
-                logger.info("instagram.message.sent", recipient_id=recipient_id)
-                return mid
             except httpx.HTTPStatusError as exc:
                 raise InstagramError(
                     f"Ошибка отправки сообщения: {exc.response.status_code} {exc.response.text}"
                 ) from exc
-            except httpx.RequestError as exc:
-                raise InstagramError(f"Сетевая ошибка при отправке: {exc}") from exc
+
+            mid = None
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    mid = data.get("message_id")
+            except Exception:
+                mid = None
+            if mid:
+                self._sent_mids.add(mid)
+                if len(self._sent_mids) > self._SENT_MIDS_MAX:
+                    for _ in range(len(self._sent_mids) - self._SENT_MIDS_MAX):
+                        self._sent_mids.pop_oldest()
+            logger.info("instagram.message.sent", recipient_id=recipient_id)
+            return mid
+
+    @classmethod
+    def _check_rate_limit(cls, response: httpx.Response) -> "InstagramRateLimitError | None":
+        """Проверить признак rate-limit внутри JSON-тела ответа.
+
+        Возвращает готовое (но не брошенное) исключение, если найден
+        `error.code` из `_RATE_LIMIT_CODES`, иначе None. Не бросает исключений
+        сама — при любой проблеме парсинга просто считает, что лимита нет.
+        """
+        try:
+            data = response.json()
+        except Exception:
+            return None
+        if not isinstance(data, dict):
+            return None
+        error = data.get("error")
+        if not isinstance(error, dict):
+            return None
+        code = error.get("code")
+        if code not in cls._RATE_LIMIT_CODES:
+            return None
+
+        return InstagramRateLimitError(
+            error.get("message") or f"Instagram API rate limit (code={code})",
+            error_code=code,
+            retry_after_seconds=cls._extract_retry_after(response),
+        )
+
+    @staticmethod
+    def _extract_retry_after(response: httpx.Response) -> float | None:
+        """Достать оценку времени до снятия троттлинга из заголовка usage.
+
+        Meta кладёт `estimated_time_to_regain_access` (в минутах) внутрь
+        JSON-заголовка `X-Business-Use-Case-Usage`, обычно вложенного по
+        business-object-id — точная структура вложенности не задокументирована
+        явно, поэтому ищем ключ рекурсивно по всему разобранному значению.
+        Возвращает секунды, либо None, если заголовка нет/не распарсился.
+        """
+        header = response.headers.get("x-business-use-case-usage")
+        if not header:
+            return None
+        try:
+            usage = json.loads(header)
+        except Exception:
+            return None
+
+        def _find(value):
+            if isinstance(value, dict):
+                if "estimated_time_to_regain_access" in value:
+                    return value["estimated_time_to_regain_access"]
+                for v in value.values():
+                    found = _find(v)
+                    if found is not None:
+                        return found
+            elif isinstance(value, list):
+                for item in value:
+                    found = _find(item)
+                    if found is not None:
+                        return found
+            return None
+
+        minutes = _find(usage)
+        if minutes is None:
+            return None
+        try:
+            return float(minutes) * 60
+        except (TypeError, ValueError):
+            return None
 
     def is_own_message(self, mid: str, app_id: str | None = None) -> bool:
         """Эхо отправлено самим ботом (а не живым менеджером)?"""
