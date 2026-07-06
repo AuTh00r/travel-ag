@@ -58,8 +58,12 @@ Write-Host "      Done" -ForegroundColor Green
 
 if (-not $SkipTests) {
     Write-Host "[4/5] Running tests on server..." -ForegroundColor Yellow
-    ssh $SSH_HOST "cd $REMOTE_DIR; .venv\Scripts\python -m pytest tests -q"
-    if ($LASTEXITCODE -ne 0) { throw "Tests failed. Deploy aborted." }
+    ssh $SSH_HOST "cd $REMOTE_DIR; .venv\Scripts\python -m pytest tests -q 2>&1" 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        Write-Host "      Tests failed (exit code: $exitCode). Check manually via SSH." -ForegroundColor Red
+        throw "Tests failed. Deploy aborted."
+    }
     Write-Host "      Tests passed" -ForegroundColor Green
 } else {
     Write-Host "[4/5] Tests skipped (--SkipTests)" -ForegroundColor Gray
