@@ -90,21 +90,37 @@ Write-Host "[5/5] Restarting bot..." -ForegroundColor Yellow
 
 ssh $SSH_HOST "chcp 65001 >nul & schtasks /run /tn RestartTravelBot"
 if ($LASTEXITCODE -ne 0) { throw "Failed to restart bot" }
-Start-Sleep -Seconds 3
 Write-Host "      Done" -ForegroundColor Green
 
 # 5. Health check
+# Bot takes up to ~30s to come back up after restart (loads FAQ/tours/embeddings
+# in background threads before it's actually reachable) — poll instead of a
+# single fixed sleep + one-shot check, which was racing ahead of readiness.
 Write-Host ""
 Write-Host "=== Health check ===" -ForegroundColor Cyan
-try {
-    $response = Invoke-WebRequest -Uri $HEALTH_URL -UseBasicParsing -TimeoutSec 10
-    Write-Host $response.Content -ForegroundColor Green
+$maxWaitSeconds = 30
+$pollIntervalSeconds = 3
+$elapsed = 0
+$healthy = $false
+while ($elapsed -lt $maxWaitSeconds) {
+    Start-Sleep -Seconds $pollIntervalSeconds
+    $elapsed += $pollIntervalSeconds
+    try {
+        $response = Invoke-WebRequest -Uri $HEALTH_URL -UseBasicParsing -TimeoutSec 5
+        Write-Host $response.Content -ForegroundColor Green
+        $healthy = $true
+        break
+    } catch {
+        Write-Host "      Not ready yet (${elapsed}s)..." -ForegroundColor Gray
+    }
+}
+
+if ($healthy) {
     Write-Host ""
     Write-Host "Deploy completed successfully!" -ForegroundColor Green
-} catch {
-    Write-Host "Health check failed: $_" -ForegroundColor Red
+    exit 0
+} else {
+    Write-Host "Health check failed after ${maxWaitSeconds}s." -ForegroundColor Red
     Write-Host "Check server manually via Chrome Remote Desktop." -ForegroundColor Yellow
     exit 1
 }
-
-exit 0
