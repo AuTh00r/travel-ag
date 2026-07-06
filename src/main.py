@@ -2,13 +2,19 @@ import asyncio
 import re
 import threading
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from structlog import get_logger
 
 from src.channels.instagram import InstagramChannel
 from src.config import settings
+from src.db.pending_messages import (
+    delete_pending,
+    enqueue_pending,
+    get_due_pending,
+    mark_pending_retry,
+)
 from src.db.sessions import (
     get_session,
     is_manager_active,
@@ -74,6 +80,12 @@ async def lifespan(app: FastAPI):
 
     threading.Thread(target=_load_faq, daemon=True).start()
     threading.Thread(target=_load_tours, daemon=True).start()
+
+    # Фоновый воркер очереди недоставленных сообщений
+    worker_task = asyncio.create_task(_pending_messages_worker())
+    _background_tasks.add(worker_task)
+    worker_task.add_done_callback(_background_tasks.discard)
+
     yield
 
 
@@ -230,6 +242,43 @@ def _should_greet(prev_last_iso: str | None, is_first: bool) -> tuple[bool, bool
     return False, False
 
 
+async def _send_or_queue(sender_id: str, text: str) -> tuple[bool, str | None]:
+    """Отправить сообщение клиенту; при сбое поставить в очередь на повтор.
+
+    Возвращает (True, None) при успехе. При провале сообщение уже поставлено
+    в pending_messages, возвращает (False, retry_at) — retry_at можно
+    переиспользовать, если нужно поставить в очередь ещё несколько сообщений
+    с тем же временем повтора (см. process_with_ai — остальные chunks одного
+    ответа не пытаемся отправлять, раз этот уже словил лимит).
+    """
+    try:
+        await instagram.send_message(sender_id, text)
+        return True, None
+    except InstagramRateLimitError as exc:
+        logger.warning("instagram.message.send_failed", sender_id=sender_id)
+        logger.error(
+            "instagram.message.lost",
+            sender_id=sender_id,
+            reason="rate_limited",
+            error_code=exc.error_code,
+            retry_after_seconds=exc.retry_after_seconds,
+        )
+        retry_at = (
+            datetime.now(timezone.utc)
+            + timedelta(seconds=exc.retry_after_seconds or settings.default_retry_seconds)
+        ).isoformat()
+        await enqueue_pending(sender_id, text, retry_at)
+        return False, retry_at
+    except Exception:
+        logger.exception("instagram.message.send_failed", sender_id=sender_id)
+        logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
+        retry_at = (
+            datetime.now(timezone.utc) + timedelta(seconds=settings.default_retry_seconds)
+        ).isoformat()
+        await enqueue_pending(sender_id, text, retry_at)
+        return False, retry_at
+
+
 async def process_with_ai(sender_id: str, text: str) -> None:
     from src.ai.prompts import build_full_prompt
     from src.db.faq_db import search_faq
@@ -250,7 +299,7 @@ async def process_with_ai(sender_id: str, text: str) -> None:
 
     if is_rate_limited(sender_id):
         logger.warning("guard.rate_limited", sender_id=sender_id)
-        await instagram.send_message(
+        await _send_or_queue(
             sender_id,
             "Вы пишете слишком часто. Пожалуйста, подождите минуту 🙏",
         )
@@ -259,7 +308,7 @@ async def process_with_ai(sender_id: str, text: str) -> None:
     ok, reason = check_input(text)
     if not ok:
         logger.warning("guard.input_rejected", sender_id=sender_id, reason=reason)
-        await instagram.send_message(sender_id, _guard_reply(reason))
+        await _send_or_queue(sender_id, _guard_reply(reason))
         return
 
     lock = await _get_lock(sender_id)
@@ -329,30 +378,34 @@ async def process_with_ai(sender_id: str, text: str) -> None:
                 except Exception:
                     logger.exception("escalation.notify_failed")
 
+        # Сохраняем user-реплику, НО НЕ assistant — её сохраним только после
+        # успешной отправки, чтобы история не врала о недоставленном ответе.
         history.append({"role": "user", "content": text})
-        history.append({"role": "assistant", "content": clean_reply})
         session["history"] = history
         session["escalation_count"] = escalation_count
         session["last_message_at"] = datetime.now(timezone.utc).isoformat()
         await save_session(sender_id, session)
 
-        for chunk in _split_reply(clean_reply):
-            try:
-                await instagram.send_message(sender_id, chunk)
-            except InstagramRateLimitError as exc:
-                logger.warning("instagram.message.send_failed", sender_id=sender_id)
-                logger.error(
-                    "instagram.message.lost",
-                    sender_id=sender_id,
-                    reason="rate_limited",
-                    error_code=exc.error_code,
-                    retry_after_seconds=exc.retry_after_seconds,
-                )
+        # Пытаемся отправить все chunks. В историю попадает только реально
+        # доставленное — если chunk N упал, chunks[N:] не пытаемся отправлять
+        # (тот же сбой), а сразу ставим в очередь с тем же retry_at. Успешно
+        # отправленные до сбоя chunks (sent_chunks) всё равно фиксируем в
+        # истории — иначе клиент получил кусок ответа, а бот об этом не помнит.
+        chunks = _split_reply(clean_reply)
+        sent_chunks: list[str] = []
+        for i, chunk in enumerate(chunks):
+            ok, retry_at = await _send_or_queue(sender_id, chunk)
+            if not ok:
+                for remaining in chunks[i + 1:]:
+                    await enqueue_pending(sender_id, remaining, retry_at)
                 break
-            except Exception:
-                logger.exception("instagram.message.send_failed", sender_id=sender_id)
-                logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
-                break
+            sent_chunks.append(chunk)
+
+        if sent_chunks:
+            history.append({"role": "assistant", "content": " ".join(sent_chunks)})
+            session["history"] = history
+            session["last_message_at"] = datetime.now(timezone.utc).isoformat()
+            await save_session(sender_id, session)
 
 
 async def _mark_manager_active(client_id: str, manager_text: str) -> None:
@@ -442,7 +495,8 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
                     "ожидайте, пожалуйста. Он свяжется с вами в ближайшее время."
                 )
 
-            # 3. Сохранить историю
+            # 3. Сохранить историю БЕЗ реплики ассистента — её добавим
+            #    только после успешной отправки.
             history = session.get("history", [])
             history.append(
                 {
@@ -451,7 +505,6 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
                     f"Текст клиента: {text or 'без текста'}",
                 }
             )
-            history.append({"role": "assistant", "content": client_reply})
             session["history"] = history
             session["escalation_count"] = escalation_count
             session["last_message_at"] = datetime.now(timezone.utc).isoformat()
@@ -472,40 +525,26 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
             return
 
         # 5. Ответить клиенту
-        try:
-            await instagram.send_message(sender_id, client_reply)
-        except InstagramRateLimitError as exc:
-            logger.warning("instagram.message.send_failed", sender_id=sender_id)
-            logger.error(
-                "instagram.message.lost",
-                sender_id=sender_id,
-                reason="rate_limited",
-                error_code=exc.error_code,
-                retry_after_seconds=exc.retry_after_seconds,
-            )
-        except Exception:
-            logger.exception("instagram.message.send_failed", sender_id=sender_id)
-            logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
+        ok, _ = await _send_or_queue(sender_id, client_reply)
+        if not ok:
+            return
+
+        # Отправлено успешно — добавляем реплику ассистента в историю
+        lock = await _get_lock(sender_id)
+        async with lock:
+            session = await get_session(sender_id)
+            history = session.get("history", [])
+            history.append({"role": "assistant", "content": client_reply})
+            session["history"] = history
+            session["last_message_at"] = datetime.now(timezone.utc).isoformat()
+            await save_session(sender_id, session)
     except Exception:
         logger.exception("instagram.non_text.processing.failed", sender_id=sender_id)
-        try:
-            await instagram.send_message(
-                sender_id,
-                "Произошла техническая ошибка. "
-                "Наши специалисты уже работают над этим. Попробуйте позже! 🛠️",
-            )
-        except InstagramRateLimitError as exc:
-            logger.warning("instagram.message.send_failed", sender_id=sender_id)
-            logger.error(
-                "instagram.message.lost",
-                sender_id=sender_id,
-                reason="rate_limited",
-                error_code=exc.error_code,
-                retry_after_seconds=exc.retry_after_seconds,
-            )
-        except Exception:
-            logger.exception("instagram.message.send_failed", sender_id=sender_id)
-            logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
+        fallback_text = (
+            "Произошла техническая ошибка. "
+            "Наши специалисты уже работают над этим. Попробуйте позже! 🛠️"
+        )
+        await _send_or_queue(sender_id, fallback_text)
 
 
 async def _process_safely(sender_id: str, text: str) -> None:
@@ -518,24 +557,89 @@ async def _process_safely(sender_id: str, text: str) -> None:
         await process_with_ai(sender_id, text)
     except Exception:
         logger.exception("ai.processing.failed", sender_id=sender_id)
+        fallback_text = (
+            "Произошла техническая ошибка. "
+            "Наши специалисты уже работают над этим. Попробуйте позже! 🛠️"
+        )
+        await _send_or_queue(sender_id, fallback_text)
+
+
+async def _reschedule_or_giveup(row: dict, retry_after_seconds: float | None) -> None:
+    """Перепланировать недоставленное сообщение или сдаться после MAX_ATTEMPTS.
+
+    Если попытки исчерпаны — удаляем из очереди, логируем
+    instagram.message.giveup и эскалируем в Telegram (Задача 5).
+    """
+    delay = retry_after_seconds or settings.default_retry_seconds
+    new_retry_at = (datetime.now(timezone.utc) + timedelta(seconds=delay)).isoformat()
+
+    # row["attempts"] считает только повторные попытки ВОРКЕРА — самая первая
+    # (неудачная) отправка в process_with_ai/_process_non_text_safely/
+    # _process_safely в этот счётчик не попадает, там сообщение сразу
+    # уходит в очередь с attempts=0. Значит на момент этой проверки реально
+    # уже было (row["attempts"] + 2) попыток: 1 изначальная + row["attempts"]
+    # уже учтённых воркером + 1 текущая (только что провалившаяся, ещё не
+    # записанная). Сдаёмся, когда это суммарное число достигнет
+    # max_retry_attempts — отсюда порог `max_retry_attempts - 2`.
+    total_attempts_so_far = row["attempts"] + 2
+    if total_attempts_so_far >= settings.max_retry_attempts:
+        await delete_pending(row["id"])
+        logger.error(
+            "instagram.message.giveup",
+            recipient_id=row["recipient_id"],
+            attempts=total_attempts_so_far,
+        )
+        from src.services.telegram_notify import TelegramNotifier
         try:
-            await instagram.send_message(
-                sender_id,
-                "Произошла техническая ошибка. "
-                "Наши специалисты уже работают над этим. Попробуйте позже! 🛠️",
-            )
-        except InstagramRateLimitError as exc:
-            logger.warning("instagram.message.send_failed", sender_id=sender_id)
-            logger.error(
-                "instagram.message.lost",
-                sender_id=sender_id,
-                reason="rate_limited",
-                error_code=exc.error_code,
-                retry_after_seconds=exc.retry_after_seconds,
+            notifier = TelegramNotifier()
+            await notifier.notify_manager(
+                sender_id=row["recipient_id"],
+                context=(
+                    f"Не удалось доставить сообщение клиенту "
+                    f"{row['recipient_id']} после {total_attempts_so_far} попыток "
+                    f"— Instagram API недоступен/лимит. Ответьте вручную."
+                ),
+                tag="Сбой доставки",
             )
         except Exception:
-            logger.exception("instagram.message.send_failed", sender_id=sender_id)
-            logger.error("instagram.message.lost", sender_id=sender_id, reason="other")
+            logger.exception("instagram.message.giveup.notify_failed")
+    else:
+        await mark_pending_retry(row["id"], new_retry_at)
+
+
+async def _pending_messages_worker():
+    """Фоновый воркер, досылающий сообщения из очереди pending_messages.
+
+    Запускается в lifespan как asyncio.create_task. Опрашивает очередь
+    каждые pending_worker_interval_seconds, отправляет due-сообщения
+    (с per-user блокировкой, чтобы не было гонки с обычной обработкой).
+    """
+    while True:
+        await asyncio.sleep(settings.pending_worker_interval_seconds)
+        due = await get_due_pending(datetime.now(timezone.utc).isoformat())
+        for row in due:
+            lock = await _get_lock(row["recipient_id"])
+            async with lock:
+                try:
+                    await instagram.send_message(row["recipient_id"], row["text"])
+                    # Дослано успешно — добавляем в историю сессии
+                    session = await get_session(row["recipient_id"])
+                    history = session.get("history", [])
+                    history.append({"role": "assistant", "content": row["text"]})
+                    session["history"] = history
+                    session["last_message_at"] = datetime.now(timezone.utc).isoformat()
+                    await save_session(row["recipient_id"], session)
+                    await delete_pending(row["id"])
+                    logger.info(
+                        "pending.resent",
+                        id=row["id"],
+                        recipient_id=row["recipient_id"],
+                    )
+                except InstagramRateLimitError as exc:
+                    await _reschedule_or_giveup(row, exc.retry_after_seconds)
+                except Exception:
+                    logger.exception("pending.send_failed", id=row["id"])
+                    await _reschedule_or_giveup(row, None)
 
 
 @app.post("/webhook/instagram")

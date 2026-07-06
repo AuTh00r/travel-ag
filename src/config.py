@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     # Сколько бот молчит в чате после последней реплики менеджера. 10080 = 7 дней.
     manager_takeover_ttl_minutes: int = 10080
 
+    # Очередь недоставленных сообщений (pending_messages)
+    default_retry_seconds: int = 60
+    max_retry_attempts: int = 5
+    pending_worker_interval_seconds: int = 30
+
+    # Проактивный мониторинг Instagram usage
+    instagram_usage_warn_pct: int = 85
+
     # Настройки сервера
     log_level: str = "INFO"
     host: str = "0.0.0.0"

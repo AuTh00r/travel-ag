@@ -352,6 +352,91 @@ class TestRateLimitDetection:
         assert mid == "mid_ok_1"
 
 
+class TestProactiveUsageMonitoring:
+    """InstagramChannel._log_usage_stats — мониторинг usage-заголовка на успехе.
+
+    X-Business-Use-Case-Usage присутствует на КАЖДОМ ответе (не только при
+    ошибке) — читаем его и на успешных отправках, чтобы видеть приближение
+    к лимиту заранее. См. docs/PLAN-message-delivery-queue.md, Задача 1.
+    """
+
+    @pytest.mark.asyncio
+    @patch("src.channels.instagram.httpx.AsyncClient")
+    async def test_high_usage_logs_warning(self, mock_client):
+        import json
+
+        from structlog.testing import capture_logs
+
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_access_token = "test_token"
+
+        usage_header = json.dumps(
+            {
+                "17841400000000000": [
+                    {
+                        "type": "instagram",
+                        "call_count": 90,
+                        "total_time": 20,
+                        "total_cputime": 10,
+                        "estimated_time_to_regain_access": 0,
+                    }
+                ]
+            }
+        )
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = AsyncMock()
+        mock_response.json = Mock(return_value={"message_id": "mid_usage_1"})
+        mock_response.headers = {"x-business-use-case-usage": usage_header}
+        mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+            return_value=mock_response
+        )
+
+        channel = InstagramChannel()
+        with capture_logs() as logs:
+            await channel.send_message("12345", "Hello")
+
+        assert any(e.get("event") == "instagram.usage.high" for e in logs)
+
+    @pytest.mark.asyncio
+    @patch("src.channels.instagram.httpx.AsyncClient")
+    async def test_low_usage_does_not_warn(self, mock_client):
+        import json
+
+        from structlog.testing import capture_logs
+
+        from src.channels.instagram import InstagramChannel
+
+        settings.instagram_access_token = "test_token"
+
+        usage_header = json.dumps(
+            {
+                "17841400000000000": [
+                    {
+                        "type": "instagram",
+                        "call_count": 10,
+                        "total_time": 5,
+                        "total_cputime": 5,
+                        "estimated_time_to_regain_access": 0,
+                    }
+                ]
+            }
+        )
+        mock_response = AsyncMock()
+        mock_response.raise_for_status = AsyncMock()
+        mock_response.json = Mock(return_value={"message_id": "mid_usage_2"})
+        mock_response.headers = {"x-business-use-case-usage": usage_header}
+        mock_client.return_value.__aenter__.return_value.post = AsyncMock(
+            return_value=mock_response
+        )
+
+        channel = InstagramChannel()
+        with capture_logs() as logs:
+            await channel.send_message("12345", "Hello")
+
+        assert not any(e.get("event") == "instagram.usage.high" for e in logs)
+
+
 class TestMidSetEviction:
     """_MidSet — FIFO-эвикция вместо произвольной (баг set.pop())."""
 

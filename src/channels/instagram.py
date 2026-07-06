@@ -329,6 +329,7 @@ class InstagramChannel(ChannelBase):
                 if len(self._sent_mids) > self._SENT_MIDS_MAX:
                     for _ in range(len(self._sent_mids) - self._SENT_MIDS_MAX):
                         self._sent_mids.pop_oldest()
+            self._log_usage_stats(response)
             logger.info("instagram.message.sent", recipient_id=recipient_id)
             return mid
 
@@ -399,6 +400,62 @@ class InstagramChannel(ChannelBase):
             return float(minutes) * 60
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _log_usage_stats(response: httpx.Response) -> None:
+        """Проактивный мониторинг usage-заголовка (Задача 1).
+
+        Парсит X-Business-Use-Case-Usage на каждом успешном ответе и
+        логирует call_count/total_time в процентах. Если процент превышает
+        порог instagram_usage_warn_pct — пишет warning.
+
+        Meta не документирует точный потолок для каждого аккаунта, поэтому
+        проценты считаются относительно 100 как абсолютные значения из
+        заголовка (Meta сама нормализует их в 0..100).
+        """
+        header = response.headers.get("x-business-use-case-usage")
+        if not header:
+            return
+        try:
+            usage = json.loads(header)
+        except Exception:
+            return
+
+        def _find_stats(value):
+            if isinstance(value, dict):
+                if "call_count" in value and "total_time" in value:
+                    return value
+                for v in value.values():
+                    found = _find_stats(v)
+                    if found is not None:
+                        return found
+            elif isinstance(value, list):
+                for item in value:
+                    found = _find_stats(item)
+                    if found is not None:
+                        return found
+            return None
+
+        stats = _find_stats(usage)
+        if stats is None:
+            return
+
+        call_count = stats.get("call_count", 0)
+        total_time = stats.get("total_time", 0)
+        logger.debug(
+            "instagram.usage",
+            call_count_pct=call_count,
+            total_time_pct=total_time,
+        )
+
+        warn_pct = settings.instagram_usage_warn_pct
+        if call_count >= warn_pct or total_time >= warn_pct:
+            logger.warning(
+                "instagram.usage.high",
+                call_count_pct=call_count,
+                total_time_pct=total_time,
+                warn_pct=warn_pct,
+            )
 
     def is_own_message(self, mid: str, app_id: str | None = None) -> bool:
         """Эхо отправлено самим ботом (а не живым менеджером)?"""
