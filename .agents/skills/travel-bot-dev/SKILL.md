@@ -18,8 +18,7 @@ description: >
 
 Актуальная архитектура после рефакторинга `35baecd`: **single-LLM-call**.
 LangGraph-граф, `src/ai/engine.py`, `src/ai/nodes.py`, `src/ai/states.py` и
-`src/ai/classifier.py` удалены. Документы с LangGraph-эпохой лежат только в
-`docs/archive/` и используются как история, а не как рабочая инструкция.
+`src/ai/classifier.py` удалены.
 
 **Стек:** Python 3.11+ / FastAPI / DeepSeek через OpenAI-compatible API /
 LangChain OpenAI wrapper / ChromaDB / sentence-transformers / SQLite /

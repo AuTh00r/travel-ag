@@ -56,7 +56,7 @@ class InstagramChannel(ChannelBase):
     _SENT_MIDS_MAX = 10_000
 
     # Коды ошибок Meta, сигнализирующие rate-limit/throttling (проверено по
-    # docs/graph-api/overview/rate-limiting, см. docs/PLAN-graph-api-resilience.md):
+    # docs/graph-api/overview/rate-limiting):
     # 4/17/32/613 — platform-level, 80002 — Business Use Case лимит для Instagram.
     _RATE_LIMIT_CODES = {4, 17, 32, 613, 80002}
 

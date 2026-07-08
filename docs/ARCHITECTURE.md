@@ -128,7 +128,7 @@ Instagram DM → POST /webhook/instagram (main.py)
   (`error.code` в теле ответа даже при HTTP 200: `4/17/32/613/80002`) и кидает
   `InstagramRateLimitError` с `retry_after_seconds` из заголовка
   `X-Business-Use-Case-Usage`, если он есть; при успехе сохраняет `message_id`
-  для echo-фильтра (см. `docs/PLAN-graph-api-resilience.md`)
+  для echo-фильтра
 - `_sent_mids` — `_MidSet`, множество с FIFO-эвикцией по размеру (не обычный
   `set`, у которого `.pop()` удаляет произвольный элемент)
 - `get_username()` — best-effort username/name с in-memory кешем
@@ -196,4 +196,4 @@ src/
 - `WORK-PLAN.md` — исторический выполненный план по устранению техдолга
 - `docs/DEPLOY.md` — деплой на Timeweb Cloud
 - `docs/SETUP.md` — локальный запуск
-- `docs/archive/` — устаревшая документация (LangGraph-эпоха)
+

@@ -182,7 +182,7 @@ Verify Token: <значение INSTAGRAM_VERIFY_TOKEN из .env>
 В **Development Mode** (по умолчанию для новых приложений Meta) Instagram присылает
 POST на webhook **только от пользователей, добавленных в App Roles**. Для реальных
 клиентов нужно перевести приложение в Live Mode (App Review / Business Verification —
-см. `docs/ERROR.md`). Но уже сейчас можно прогнать бота end-to-end с тестерами.
+). Но уже сейчас можно прогнать бота end-to-end с тестерами.
 
 **Что проверить (диагностика):**
 

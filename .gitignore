@@ -30,22 +30,9 @@ Thumbs.db
 .ruff_cache/
 .pytest_cache/
 
-# Test artifacts
-test_out.json
-
 # Temp / dev files
 bot*.log
-nul
-bot.py
-_optimize_tours.py
 tours/_analysis.json
 
-# Personal notes
-ИЗУЧИТЬ/
 
-# Unused docs
-docs/DEPLOY-WINDOWS.md
-docs/PLAN-bot-fixes.md
-docs/PLAN-viber-escalation.md
-docs/SELF-HOSTING.md
-
+.env_old

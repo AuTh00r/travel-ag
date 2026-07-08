@@ -15,7 +15,6 @@ class InstagramRateLimitError(InstagramError):
 
     Throttling у Graph API не всегда отдаётся отдельным HTTP-статусом — код
     ошибки может прийти в JSON-теле при формально успешном HTTP 200.
-    См. docs/PLAN-graph-api-resilience.md.
 
     retry_after_seconds — оценка времени до снятия троттлинга (переведено из
     `estimated_time_to_regain_access`, если Meta прислала заголовок

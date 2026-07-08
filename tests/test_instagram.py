@@ -267,7 +267,7 @@ class TestRateLimitDetection:
 
     Meta не всегда сигнализирует троттлинг отдельным HTTP-статусом — код
     ошибки может прийти в JSON-теле при формально успешном HTTP 200, который
-    response.raise_for_status() не поймает. См. docs/PLAN-graph-api-resilience.md.
+    response.raise_for_status() не поймает.
     """
 
     @pytest.mark.asyncio
@@ -1124,7 +1124,7 @@ class TestMessageLostLogging:
     Раньше такие сбои просто логировались через logger.exception и терялись
     молча. Теперь при провале отправки должен появиться структурированный
     лог instagram.message.lost с reason ("rate_limited" или "other"), чтобы
-    это было видно в мониторинге. См. docs/PLAN-graph-api-resilience.md.
+    это было видно в мониторинге.
     """
 
     @pytest.mark.asyncio
