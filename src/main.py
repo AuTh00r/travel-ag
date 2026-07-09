@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import HTMLResponse
 from structlog import get_logger
 
 from src.channels.instagram import InstagramChannel
@@ -100,6 +101,88 @@ app = FastAPI(
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+
+_PRIVACY_POLICY_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Privacy Policy — Sandita Travel Agency</title></head>
+<body style="font-family: sans-serif; max-width: 700px; margin: 40px auto; line-height: 1.5;">
+<h1>Privacy Policy — Sandita Travel Agency</h1>
+<p>Last updated: July 9, 2026</p>
+<p>Sandita ("we", "our") operates an Instagram Direct Message assistant for our
+travel agency (Minsk, Belarus, ul. K. Liebknechta 66, office 608) to help
+customers with questions about tours, prices, and bookings.</p>
+
+<h2>What information we collect</h2>
+<ul>
+<li>The content of your Instagram Direct Messages to our account</li>
+<li>Your Instagram username/name, retrieved via the Instagram API</li>
+<li>Your phone number and/or email address, only if you voluntarily provide
+them to request a booking</li>
+</ul>
+
+<h2>How we use this information</h2>
+<ul>
+<li>To generate automated replies to your questions using an AI language model</li>
+<li>To match your questions against our tour catalog and FAQ</li>
+<li>To forward your request to a human staff member when a booking is
+requested or your question requires personal attention</li>
+</ul>
+
+<h2>Who we share it with</h2>
+<ul>
+<li>DeepSeek, our AI language model provider, receives message text to
+generate a reply</li>
+<li>Our internal staff (via a private Telegram channel) receive your contact
+details and message context when a booking or escalation occurs</li>
+<li>We do not sell your data or share it with advertisers</li>
+</ul>
+
+<h2>How long we keep it</h2>
+<p>Conversation history is stored on our own server for as long as needed to
+provide support, until you request deletion (see
+<a href="/data-deletion">Data Deletion Instructions</a>).</p>
+
+<h2>Your rights</h2>
+<p>You may request access to or deletion of your data at any time — see
+<a href="/data-deletion">Data Deletion Instructions</a>, or contact us
+directly.</p>
+
+<h2>Contact</h2>
+<p>Sandita Travel Agency, Minsk, ul. K. Liebknechta 66, office 608<br>
+Email: sundita.minsk@gmail.com<br>
+Phone: +375 29 356 83 24 / +375 29 152 37 28</p>
+</body>
+</html>"""
+
+_DATA_DELETION_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Data Deletion Instructions — Sandita Travel Agency</title></head>
+<body style="font-family: sans-serif; max-width: 700px; margin: 40px auto; line-height: 1.5;">
+<h1>Data Deletion Instructions — Sandita Travel Agency</h1>
+<p>To request deletion of your data collected through our Instagram Direct
+assistant:</p>
+<ol>
+<li>Send a message to our Instagram account (the same one you messaged)
+stating you want your data deleted, or</li>
+<li>Email us at sundita.minsk@gmail.com or call us at
++375 29 356 83 24 / +375 29 152 37 28</li>
+</ol>
+<p>We will remove your conversation history and any contact details we stored
+within 7 business days and confirm once complete.</p>
+<p>See also our <a href="/privacy">Privacy Policy</a>.</p>
+</body>
+</html>"""
+
+
+@app.get("/privacy", response_class=HTMLResponse)
+async def privacy_policy():
+    return _PRIVACY_POLICY_HTML
+
+
+@app.get("/data-deletion", response_class=HTMLResponse)
+async def data_deletion_instructions():
+    return _DATA_DELETION_HTML
 
 
 @app.post("/api/admin/reset-takeover/{client_id}")
