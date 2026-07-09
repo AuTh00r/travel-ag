@@ -57,19 +57,19 @@ Write-Host "      Done" -ForegroundColor Green
 # 3. Pull + deps on server
 Write-Host "[3/5] Updating code on server..." -ForegroundColor Yellow
 
-# Однострочная команда через & обязательна: ssh передаёт многострочный
-# here-string удалённому cmd.exe одним аргументом, и тот выполняет только
-# первую строку, молча пропуская остальное (код возврата при этом 0) —
-# из-за этого git pull/pip install тихо не выполнялись на сервере.
-$updateCmd = "chcp 65001 >nul & cd /d $REMOTE_DIR & if exist .git\index.lock del /f .git\index.lock & git pull origin master & if errorlevel 1 exit /b 1 & .venv\Scripts\pip install -r requirements.txt -q & if errorlevel 1 exit /b 1 & echo [deploy] Code updated"
-
-_ssh $updateCmd
+# Никаких `if` внутри однострочных & -цепочек: проверено вживую (2026-07-09) —
+# ssh на этом сервере обрывает выполнение всего, что идёт по цепочке & после
+# любого if (exist/errorlevel, со скобками или без) — тихо, с кодом возврата 0,
+# как будто всё прошло успешно. Вместо этого — отдельный _ssh-вызов на каждый
+# шаг, код возврата берётся из exit code последней команды в цепочке (это
+# работает надёжно, проверено), _ssh уже сам бросает исключение при ошибке.
+_ssh "chcp 65001 >nul & cd /d $REMOTE_DIR & del /f .git\index.lock 2>nul & git pull origin master"
+_ssh "chcp 65001 >nul & cd /d $REMOTE_DIR & .venv\Scripts\pip install -r requirements.txt -q"
 Write-Host "      Done" -ForegroundColor Green
 
 if (-not $SkipTests) {
     Write-Host "[4/5] Running tests on server..." -ForegroundColor Yellow
-    $testCmd = "chcp 65001 >nul & cd /d $REMOTE_DIR & .venv\Scripts\python -m pytest tests -q 2>&1 & if errorlevel 1 exit /b 1 & echo [deploy] Tests passed"
-    _ssh $testCmd
+    _ssh "chcp 65001 >nul & cd /d $REMOTE_DIR & .venv\Scripts\python -m pytest tests -q 2>&1"
     Write-Host "      Tests passed" -ForegroundColor Green
 } else {
     Write-Host "[4/5] Tests skipped (--SkipTests)" - ForegroundColor Gray
