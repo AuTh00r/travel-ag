@@ -18,6 +18,12 @@ $SSH_HOST = "sundita-office"
 $REMOTE_DIR = "C:\travel-agent-bot"
 $HEALTH_URL = "https://sundita.online/health"
 
+function _ssh {
+    param([string]$Cmd)
+    ssh $SSH_HOST $Cmd
+    if ($LASTEXITCODE -ne 0) { throw "SSH command failed (exit: $LASTEXITCODE)" }
+}
+
 Write-Host "=== Travel Bot Deploy ===" -ForegroundColor Cyan
 Write-Host ""
 
@@ -40,14 +46,12 @@ if (-not $SkipPush) {
     if ($LASTEXITCODE -ne 0) { throw "git push failed" }
     Write-Host "      Done" -ForegroundColor Green
 } else {
-    Write-Host "[1/5] Push skipped (--SkipPush)" -ForegroundColor Gray
+    Write-Host "[1/5] Push skipped (--SkipPush)" - ForegroundColor Gray
 }
 
 # 2. Check SSH access
 Write-Host "[2/5] Checking SSH access to server..." -ForegroundColor Yellow
-
-ssh -o ConnectTimeout=10 $SSH_HOST "chcp 65001 >nul & echo SSH_OK"
-if ($LASTEXITCODE -ne 0) { throw "SSH unavailable. Check cloudflared and Cloudflare Access." }
+_ssh "chcp 65001 >nul & echo SSH_OK"
 Write-Host "      Done" -ForegroundColor Green
 
 # 3. Pull + deps on server
@@ -55,47 +59,42 @@ Write-Host "[3/5] Updating code on server..." -ForegroundColor Yellow
 
 $updateCmd = @"
 chcp 65001 >nul
-git config --global --add safe.directory $REMOTE_DIR 2>nul
-cd $REMOTE_DIR
+cd /d $REMOTE_DIR
+if exist .git\index.lock (
+    del /f .git\index.lock
+    echo [deploy] Removed stale index.lock
+)
 git pull origin master
+if errorlevel 1 exit /b 1
 .venv\Scripts\pip install -r requirements.txt -q
+if errorlevel 1 exit /b 1
+echo [deploy] Code updated
 "@
 
-ssh $SSH_HOST $updateCmd
-if ($LASTEXITCODE -ne 0) { throw "Failed to update code on server" }
+_ssh $updateCmd
 Write-Host "      Done" -ForegroundColor Green
 
 if (-not $SkipTests) {
     Write-Host "[4/5] Running tests on server..." -ForegroundColor Yellow
-    # Remote shell is cmd.exe (not PowerShell) — ";" is not a command separator there,
-    # so this must be a newline-joined command, same pattern as $updateCmd above.
     $testCmd = @"
 chcp 65001 >nul
-cd $REMOTE_DIR
+cd /d $REMOTE_DIR
 .venv\Scripts\python -m pytest tests -q 2>&1
+if errorlevel 1 exit /b 1
+echo [deploy] Tests passed
 "@
-    ssh $SSH_HOST $testCmd
-    $exitCode = $LASTEXITCODE
-    if ($exitCode -ne 0) {
-        Write-Host "      Tests failed (exit code: $exitCode). Check manually via SSH." -ForegroundColor Red
-        throw "Tests failed. Deploy aborted."
-    }
+    _ssh $testCmd
     Write-Host "      Tests passed" -ForegroundColor Green
 } else {
-    Write-Host "[4/5] Tests skipped (--SkipTests)" -ForegroundColor Gray
+    Write-Host "[4/5] Tests skipped (--SkipTests)" - ForegroundColor Gray
 }
 
 # 4. Restart bot
 Write-Host "[5/5] Restarting bot..." -ForegroundColor Yellow
-
-ssh $SSH_HOST "chcp 65001 >nul & schtasks /run /tn RestartTravelBot"
-if ($LASTEXITCODE -ne 0) { throw "Failed to restart bot" }
+_ssh "chcp 65001 >nul & schtasks /run /tn RestartTravelBot"
 Write-Host "      Done" -ForegroundColor Green
 
 # 5. Health check
-# Bot takes up to ~30s to come back up after restart (loads FAQ/tours/embeddings
-# in background threads before it's actually reachable) — poll instead of a
-# single fixed sleep + one-shot check, which was racing ahead of readiness.
 Write-Host ""
 Write-Host "=== Health check ===" -ForegroundColor Cyan
 $maxWaitSeconds = 30
