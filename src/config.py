@@ -1,4 +1,8 @@
+from datetime import timedelta, timezone
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+MINSK_TZ = timezone(timedelta(hours=3))
 
 
 class Settings(BaseSettings):

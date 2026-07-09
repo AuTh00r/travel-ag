@@ -1,9 +1,9 @@
-from datetime import datetime, timezone
+from datetime import datetime
 
 from httpx import AsyncClient
 from structlog import get_logger
 
-from src.config import settings
+from src.config import MINSK_TZ, settings
 from src.exceptions import TelegramError
 
 logger = get_logger()
@@ -23,7 +23,7 @@ def _build_notification_text(
     client_email: str | None = None,
     tag: str = "Нужен звонок",
 ) -> str:
-    now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
+    now = datetime.now(MINSK_TZ).strftime("%d.%m.%Y %H:%M")
 
     lines = [
         "\U0001f6a8 Новая эскалация",

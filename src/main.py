@@ -333,14 +333,17 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         instagram_handle = await instagram.get_username(sender_id)
 
         escalation_count = session.get("escalation_count", 0)
-        from datetime import datetime as dt
-        current_time = dt.now().strftime("%H:%M")
+        from src.config import MINSK_TZ
+        now_minsk = datetime.now(MINSK_TZ)
+        current_time = now_minsk.strftime("%H:%M")
+        current_date = now_minsk.date()
         is_first = not history
         should_greet, is_first_msg = _should_greet(
             session.get("last_message_at"), is_first,
         )
         messages = build_full_prompt(
             tours_text, faq_context, history, text, escalation_count,
+            current_date=current_date,
             current_time=current_time,
             should_greet=should_greet,
             is_first_message=is_first_msg,
