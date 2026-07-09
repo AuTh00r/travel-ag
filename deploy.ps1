@@ -57,32 +57,18 @@ Write-Host "      Done" -ForegroundColor Green
 # 3. Pull + deps on server
 Write-Host "[3/5] Updating code on server..." -ForegroundColor Yellow
 
-$updateCmd = @"
-chcp 65001 >nul
-cd /d $REMOTE_DIR
-if exist .git\index.lock (
-    del /f .git\index.lock
-    echo [deploy] Removed stale index.lock
-)
-git pull origin master
-if errorlevel 1 exit /b 1
-.venv\Scripts\pip install -r requirements.txt -q
-if errorlevel 1 exit /b 1
-echo [deploy] Code updated
-"@
+# Однострочная команда через & обязательна: ssh передаёт многострочный
+# here-string удалённому cmd.exe одним аргументом, и тот выполняет только
+# первую строку, молча пропуская остальное (код возврата при этом 0) —
+# из-за этого git pull/pip install тихо не выполнялись на сервере.
+$updateCmd = "chcp 65001 >nul & cd /d $REMOTE_DIR & if exist .git\index.lock del /f .git\index.lock & git pull origin master & if errorlevel 1 exit /b 1 & .venv\Scripts\pip install -r requirements.txt -q & if errorlevel 1 exit /b 1 & echo [deploy] Code updated"
 
 _ssh $updateCmd
 Write-Host "      Done" -ForegroundColor Green
 
 if (-not $SkipTests) {
     Write-Host "[4/5] Running tests on server..." -ForegroundColor Yellow
-    $testCmd = @"
-chcp 65001 >nul
-cd /d $REMOTE_DIR
-.venv\Scripts\python -m pytest tests -q 2>&1
-if errorlevel 1 exit /b 1
-echo [deploy] Tests passed
-"@
+    $testCmd = "chcp 65001 >nul & cd /d $REMOTE_DIR & .venv\Scripts\python -m pytest tests -q 2>&1 & if errorlevel 1 exit /b 1 & echo [deploy] Tests passed"
     _ssh $testCmd
     Write-Host "      Tests passed" -ForegroundColor Green
 } else {
