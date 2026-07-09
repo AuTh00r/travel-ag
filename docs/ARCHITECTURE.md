@@ -194,6 +194,6 @@ src/
 ## Связанные документы
 
 - `WORK-PLAN.md` — исторический выполненный план по устранению техдолга
-- `docs/DEPLOY.md` — деплой на Timeweb Cloud
+- `docs/DEPLOY.md` — деплой на сервер (Windows + Cloudflare Tunnel)
 - `docs/SETUP.md` — локальный запуск
 

@@ -82,27 +82,20 @@ git commit -m "..."
 git push origin master
 ```
 
-## VPS
+## Сервер (Windows)
 
-Быстрые команды и актуальные адреса лежат в `docs/DEPLOY.md`.
+Быстрые команды и актуальные адреса — в `docs/DEPLOY.md`.
 
-Проверка сервиса на сервере:
+Проверка сервиса:
 
-```bash
-ssh -i ~/.ssh/id_ed25519_travelbot root@201.51.3.72
-cd /opt/travel-agent-bot
-source .venv/bin/activate
-pytest tests/ -q
-systemctl status travel-bot --no-pager -l
-curl http://127.0.0.1:8000/health
-curl http://127.0.0.1:8000/webhook/instagram/last_seen
-```
+```powershell
+# SSH
+ssh sundita-office "chcp 65001 >nul & curl http://127.0.0.1:8000/health"
+ssh sundita-office "chcp 65001 >nul & curl http://127.0.0.1:8000/webhook/instagram/last_seen"
 
-Публичные проверки:
-
-```bash
-curl https://travelagenttest.duckdns.org/health
-curl https://travelagenttest.duckdns.org/webhook/instagram/last_seen
+# Health через домен
+curl https://sundita.online/health
+curl https://sundita.online/webhook/instagram/last_seen
 ```
 
 
@@ -113,7 +106,7 @@ curl https://travelagenttest.duckdns.org/webhook/instagram/last_seen
 
 ```bash
 # Вложение без текста
-curl -X POST https://travelagenttest.duckdns.org/webhook/instagram \
+curl -X POST https://sundita.online/webhook/instagram \
   -H "Content-Type: application/json" \
   -d '{
     "entry": [{
@@ -128,7 +121,7 @@ curl -X POST https://travelagenttest.duckdns.org/webhook/instagram \
   }'
 
 # Ответ на историю
-curl -X POST https://travelagenttest.duckdns.org/webhook/instagram \
+curl -X POST https://sundita.online/webhook/instagram \
   -H "Content-Type: application/json" \
   -d '{
     "entry": [{
@@ -146,6 +139,6 @@ curl -X POST https://travelagenttest.duckdns.org/webhook/instagram \
 
 Проверить логи:
 
-```bash
-journalctl -u travel-bot -n 100 --no-pager | grep instagram.non_text
+```powershell
+ssh sundita-office "chcp 65001 >nul & type C:\travel-agent-bot\nohup.out 2>nul"
 ```

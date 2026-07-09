@@ -1,70 +1,98 @@
-# Деплой на VPS
+# Деплой на сервер
 
 ## Быстрый деплой (после изменений)
 
-```bash
+```powershell
+.\deploy.ps1
+```
+
+Скрипт делает всё автоматически:
+1. Коммитит и пушит в `origin master`
+2. Проверяет SSH-доступ
+3. Пуллит код на сервере и устанавливает зависимости
+4. (Опционально) запускает тесты
+5. Перезапускает бота через планировщик задач
+6. Ждёт health check
+
+Параметры:
+```powershell
+.\deploy.ps1 -SkipTests          # без тестов
+.\deploy.ps1 -SkipPush           # без пуша (если уже запушили руками)
+.\deploy.ps1 -CommitMessage "fix" # свой коммит
+```
+
+## Вручную (пошагово)
+
+```powershell
 # 1. Закоммитить и запушить
 git add -A
 git commit -m "краткое описание"
 git push origin master
 
-# 2. Зайти на VPS, стянуть код и перезапустить
-ssh -i ~/.ssh/id_ed25519_travelbot root@201.51.3.72
-cd /opt/travel-agent-bot
+# 2. Зайти на сервер, стянуть код и обновить зависимости
+ssh sundita-office
+chcp 65001
+cd C:\travel-agent-bot
 git pull origin master
-source .venv/bin/activate
-pip install -r requirements.txt
-pytest tests/ -q
+.venv\Scripts\pip install -r requirements.txt -q
+# или одной строкой:
+ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & git pull origin master & .venv\Scripts\pip install -r requirements.txt -q"
 
-# Перезапустить процесс (если через systemd):
-systemctl restart travel-bot
+# 3. Запустить тесты
+ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & .venv\Scripts\python -m pytest tests -q"
 
-# Или если через screen/tmux:
-# pkill -f "uvicorn src.main:app"
-# nohup .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 &
+# 4. Перезапустить бота
+ssh sundita-office "chcp 65001 >nul & schtasks /run /tn RestartTravelBot"
 
-# 3. Проверить
-curl https://travelagenttest.duckdns.org/health
+# 5. Проверить
+curl https://sundita.online/health
 # → {"status":"ok"}
 ```
 
 ## Сброс сессий (если контекст засорён)
 
-```bash
-ssh -i ~/.ssh/id_ed25519_travelbot root@201.51.3.72
-cd /opt/travel-agent-bot
-rm -f data/sessions.db
-# перезапустить бота
+```powershell
+ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & del /q data\sessions.db"
+# Бот сам создаст новую БД при следующем запросе.
+```
+
+## Сброс takeover (паузы бота) для конкретного клиента
+
+```powershell
+ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & .venv\Scripts\python -c ^
+import sqlite3, json; conn = sqlite3.connect('data/sessions.db'); ^
+[conn.execute('UPDATE sessions SET state=? WHERE client_id=?', ^
+ (json.dumps({**json.loads(s), 'manager_last_at': None}), cid)) ^
+ for cid,s in conn.execute('SELECT client_id, state FROM sessions').fetchall()]; ^
+conn.commit(); conn.close(); print('Done')"
 ```
 
 ## Просмотр логов
 
-```bash
-ssh -i ~/.ssh/id_ed25519_travelbot root@201.51.3.72
-
-# Через journalctl (если systemd)
-journalctl -u travel-bot -n 50 --no-pager
-
-# Или через nohup-лог
-tail -n 50 nohup.out
+```powershell
+# Через Chrome Remote Desktop — открыть лог-файл на сервере вручную.
+# Либо через SSH (для простых команд):
+ssh sundita-office "chcp 65001 >nul & type C:\travel-agent-bot\nohup.out 2>nul | tail -50"
 ```
 
 ## Проверка статуса
 
-```bash
-ssh -i ~/.ssh/id_ed25519_travelbot root@201.51.3.72
+```powershell
+# Health
+curl https://sundita.online/health
 
 # Проверить, приходят ли вебхуки от Instagram
-curl http://127.0.0.1:8000/webhook/instagram/last_seen
+curl https://sundita.online/webhook/instagram/last_seen
 # → {"received_ever":true,"last_received_at":"..."} — OK
 # → {"received_ever":false} — вебхуки не приходят
 ```
 
 ## Ссылки
 
-- **Домен**: https://travelagenttest.duckdns.org
-- **Webhook**: https://travelagenttest.duckdns.org/webhook/instagram
-- **Health**: https://travelagenttest.duckdns.org/health
-- **IP VPS**: `201.51.3.72`
-- **SSH ключ**: `~/.ssh/id_ed25519_travelbot`
+- **Домен**: `https://sundita.online`
+- **Webhook**: `https://sundita.online/webhook/instagram`
+- **Health**: `https://sundita.online/health`
+- **SSH**: `ssh sundita-office` (настройка в `~\.ssh\config`)
+- **Сервер**: Windows, проект `C:\travel-agent-bot`
 - **Репозиторий**: `https://github.com/AuTh00r/travel-ag.git`
+- **Деплой скрипт**: `deploy.ps1`

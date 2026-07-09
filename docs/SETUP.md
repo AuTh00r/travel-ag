@@ -43,126 +43,53 @@ ruff check src tests
 `asyncio_mode = "auto"`, а `conftest.py` добавляет корень проекта в `sys.path`.
 Playwright не требуется — тесты без него.
 
-## Деплой на Timeweb Cloud VPS
+## Сервер (Windows + Cloudflare Tunnel)
 
-### 1. Создать VPS
+Сервер — Windows-машина с Cloudflare Tunnel. Домен `sundita.online` проброшен
+через Cloudflare на `localhost:8000`. SSH-доступ — через `ssh.sundita.online`
+с аутентификацией через Cloudflare Access.
 
-- Timeweb Cloud → VPS → Ubuntu 24.04, минимум 1GB RAM, 1 vCPU
-- После создания записать IP-адрес (например, `201.51.3.72`)
-- Сгенерировать SSH-ключ для доступа:
+### SSH-доступ
 
-```bash
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519_travelbot -N ""
-ssh-copy-id -i ~/.ssh/id_ed25519_travelbot root@<IP-адрес-VPS>
-# Или добавить публичный ключ в панели Timeweb Cloud
-```
-
-### 2. Развернуть проект
-
-```bash
-ssh -i ~/.ssh/id_ed25519_travelbot root@<IP-адрес-VPS>
-
-# Python 3.11
-apt update && apt upgrade -y
-apt install -y python3.11 python3.11-venv python3.11-dev git curl
-
-# Клонировать
-git clone https://github.com/AuTh00r/travel-ag.git /opt/travel-agent-bot
-cd /opt/travel-agent-bot
-
-# Виртуальное окружение
-python3.11 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-
-# Настроить .env
-cp .env.example .env
-nano .env  # вставить реальные ключи
-```
-
-### 5. Настроить DuckDNS (бесплатный домен)
-
-1. Зайти на https://www.duckdns.org
-2. Войти через GitHub/Google/Twitter
-3. Создать домен (например, `travelagenttest.duckdns.org`)
-4. Добавить A-запись → IP вашего VPS
-5. Получить токен
-
-Создать скрипт обновления IP `/opt/travel-agent-bot/duckdns.sh`:
-
-```bash
-#!/bin/bash
-echo url="https://www.duckdns.org/update?domains=<DOMAIN>&token=<TOKEN>&ip=" | \
-  curl -s -k -o /dev/null -K -
-```
-
-```bash
-chmod +x /opt/travel-agent-bot/duckdns.sh
-
-# Добавить в cron (каждые 5 минут)
-(crontab -l 2>/dev/null; echo "*/5 * * * * /opt/travel-agent-bot/duckdns.sh >/dev/null 2>&1") | crontab -
-```
-
-### 6. Настроить Nginx + Let's Encrypt SSL
-
-Создать `/etc/nginx/sites-available/travel-bot`:
-
-```nginx
-server {
-    listen 80;
-    server_name <ВАШ_ДОМЕН>.duckdns.org;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl;
-    server_name <ВАШ_ДОМЕН>.duckdns.org;
-
-    ssl_certificate /etc/letsencrypt/live/<ВАШ_ДОМЕН>.duckdns.org/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/<ВАШ_ДОМЕН>.duckdns.org/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-    }
-
-    location /health {
-        access_log off;
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
-
-```bash
-# Включить сайт
-ln -s /etc/nginx/sites-available/travel-bot /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
-
-# Получить SSL (certbot сам обновит конфиг nginx, если server_name совпадает)
-certbot --nginx -d <ВАШ_ДОМЕН>.duckdns.org
-
-# Если certbot не смог автоматически настроить — перезаписать конфиг вручную
-# (как указано выше) и перезагрузить nginx
-nginx -t && systemctl reload nginx
-
-# Проверить
-curl https://<ВАШ_ДОМЕН>.duckdns.org/health
-# → {"status": "ok"}
-```
-
-### 7. Настройка Instagram Webhook
-
-Webhook URL (требует HTTPS — готов после шага 6):
+Настроен в `~\.ssh\config`:
 
 ```
-Callback URL: https://<ВАШ_ДОМЕН>.duckdns.org/webhook/instagram
+Host sundita-office
+  HostName ssh.sundita.online
+  User deploy
+  IdentityFile ~\.ssh\id_ed25519_travelbot
+  ProxyCommand cloudflared access ssh --hostname %h
+```
+
+Подключение:
+
+```powershell
+ssh sundita-office
+```
+
+При первом подключении `cloudflared` откроет браузер для входа через email.
+Подробнее — `docs/SSH-REMOTE-ACCESS-SETUP.md`.
+
+### Быстрый деплой
+
+```powershell
+.\deploy.ps1
+```
+
+Скрипт сам коммитит, пушит, стягивает код на сервере, устанавливает
+зависимости, запускает тесты, перезапускает бота и проверяет health.
+
+Параметры:
+```powershell
+.\deploy.ps1 -SkipTests          # без тестов
+.\deploy.ps1 -SkipPush           # без пуша
+.\deploy.ps1 -CommitMessage "fix" # свой коммит
+```
+
+### Настройка Instagram Webhook
+
+```
+Callback URL: https://sundita.online/webhook/instagram
 Verify Token: <значение INSTAGRAM_VERIFY_TOKEN из .env>
 ```
 
@@ -177,12 +104,12 @@ Verify Token: <значение INSTAGRAM_VERIFY_TOKEN из .env>
 Если `INSTAGRAM_APP_SECRET` пустой в `.env` — проверка пропускается (для тестов),
 в логах появится предупреждение `instagram.webhook.signature_skipped`.
 
-### 8. Instagram в Development Mode (приём сообщений до Live Mode)
+### Instagram в Development Mode (приём сообщений до Live Mode)
 
 В **Development Mode** (по умолчанию для новых приложений Meta) Instagram присылает
 POST на webhook **только от пользователей, добавленных в App Roles**. Для реальных
-клиентов нужно перевести приложение в Live Mode (App Review / Business Verification —
-). Но уже сейчас можно прогнать бота end-to-end с тестерами.
+клиентов нужно перевести приложение в Live Mode (App Review / Business Verification).
+Но уже сейчас можно прогнать бота end-to-end с тестерами.
 
 **Что проверить (диагностика):**
 
@@ -210,10 +137,10 @@ POST на webhook **только от пользователей, добавле
 **Быстрая проверка, достукивается ли Meta вообще:**
 
 ```bash
-curl https://<ВАШ_ДОМЕН>.duckdns.org/webhook/instagram/last_seen
+curl https://sundita.online/webhook/instagram/last_seen
 ```
 
-> ⚠️ **Важно для прода:** `INSTAGRAM_APP_SECRET` обязан быть задан в `.env` на VPS.
+> ⚠️ **Важно для прода:** `INSTAGRAM_APP_SECRET` обязан быть задан в `.env` на сервере.
 > Без него webhook принимает произвольные POST без проверки подлинности (см. лог
 > `instagram.webhook.signature_skipped`). App Secret берётся в App Dashboard →
 > Settings → Basic → **App Secret**.
@@ -227,21 +154,17 @@ curl https://<ВАШ_ДОМЕН>.duckdns.org/webhook/instagram/last_seen
 
 ```bash
 # Health
-curl https://<ВАШ_ДОМЕН>.duckdns.org/health
+curl https://sundita.online/health
 ```
 
-## Обновление кода на VPS
+## Обновление кода на сервере
 
-```bash
-ssh -i ~/.ssh/id_ed25519_travelbot root@<IP-адрес-VPS>
+```powershell
+.\deploy.ps1
+```
 
-cd /opt/travel-agent-bot
-git pull
-source .venv/bin/activate
-pip install -r requirements.txt
-pytest tests/ -q
+Или вручную:
 
-# Перезапустить бота
-# Если через systemd: systemctl restart travel-bot
-# Если через screen/tmux: pkill -f "uvicorn"; nohup .venv/bin/uvicorn src.main:app --host 0.0.0.0 --port 8000 &
+```powershell
+ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & git pull & .venv\Scripts\pip install -r requirements.txt -q & .venv\Scripts\python -m pytest tests -q & schtasks /run /tn RestartTravelBot"
 ```

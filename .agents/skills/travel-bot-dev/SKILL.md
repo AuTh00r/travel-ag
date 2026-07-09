@@ -4,7 +4,7 @@ description: >
   ИИ-помощник турагентства: чат-бот на Python + FastAPI + DeepSeek API,
   работающий через Instagram Direct, с DOCX-базой туров, ChromaDB RAG для FAQ,
   SQLite-сессиями, Google Sheets для заявок и Telegram-уведомлениями менеджерам.
-  Деплой на Docker → Timeweb Cloud (РБ). Использовать при разработке,
+  Деплой на Windows-сервер через Cloudflare Tunnel. Использовать при разработке,
   отладке, тестировании и деплое любого компонента проекта travel-agent-bot.
 ---
 
@@ -24,7 +24,7 @@ LangGraph-граф, `src/ai/engine.py`, `src/ai/nodes.py`, `src/ai/states.py` и
 LangChain OpenAI wrapper / ChromaDB / sentence-transformers / SQLite /
 Google Sheets API / Telegram Bot API / Docker.
 
-**Региональные особенности:** Республика Беларусь (РБ). Хостинг — Timeweb Cloud.
+**Региональные особенности:** Республика Беларусь (РБ). Хостинг — Windows-сервер через Cloudflare Tunnel.
 
 Главный источник правды по текущей архитектуре: `docs/ARCHITECTURE.md`.
 
@@ -219,10 +219,10 @@ black src tests
 ## Дополнительные справочники
 
 - `docs/ARCHITECTURE.md` — текущий поток и компоненты.
-- `docs/DEVELOPMENT.md` — локальная работа, тесты, git, VPS.
-- `docs/SETUP.md` — локальный запуск, Docker, VPS и Instagram webhook.
+- `docs/DEVELOPMENT.md` — локальная работа, тесты, git, сервер.
+- `docs/SETUP.md` — локальный запуск, Docker, сервер и Instagram webhook.
 - `docs/ENV-SETUP.md` — настройка `.env`.
-- `docs/DEPLOY.md` — быстрые команды для Timeweb VPS.
+- `docs/DEPLOY.md` — быстрые команды для Windows-сервера.
 
 Папка `references/` внутри skill может содержать старые LangGraph-шаблоны.
 Их не использовать для текущего кода.
