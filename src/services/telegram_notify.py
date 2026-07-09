@@ -23,19 +23,25 @@ def _build_notification_text(
     client_email: str | None = None,
     tag: str = "Нужен звонок",
 ) -> str:
-    handle = f"@{instagram_handle}" if instagram_handle else sender_id
     now = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
 
     lines = [
         "\U0001f6a8 Новая эскалация",
         "",
-        f"\U0001f464 Клиент: {handle}",
-        f"\U0001f550 {now}",
-        "",
-        "\U0001f4cb Суть:",
-        context,
-        "",
     ]
+
+    if instagram_handle:
+        link = f"https://www.instagram.com/{instagram_handle}/"
+        lines.append(f"\U0001f464 Клиент: @{instagram_handle}")
+        lines.append(f"\U0001f517 {link}")
+    else:
+        lines.append(f"\U0001f464 Клиент: {sender_id}")
+
+    lines.append(f"\U0001f550 {now}")
+    lines.append("")
+    lines.append("\U0001f4cb Суть:")
+    lines.append(context)
+    lines.append("")
 
     contacts = []
     if client_name:

@@ -228,8 +228,10 @@ def _should_greet(prev_last_iso: str | None, is_first: bool) -> tuple[bool, bool
     - Возврат после паузы ≥12ч → приветствуем, НО не первое сообщение (имя не спрашиваем).
     - Продолжение диалога (<12ч) → не приветствуем.
     """
-    if is_first or prev_last_iso is None:
+    if is_first:
         return True, True
+    if prev_last_iso is None:
+        return True, False
     try:
         ts = datetime.fromisoformat(prev_last_iso)
     except (ValueError, TypeError):
