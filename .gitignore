@@ -32,6 +32,7 @@ Thumbs.db
 
 # Temp / dev files
 bot*.log
+logs/
 tours/_analysis.json
 
 

@@ -22,6 +22,9 @@ from src.db.sessions import (
     save_session,
 )
 from src.exceptions import InstagramRateLimitError
+from src.logging_config import configure_logging
+
+configure_logging()
 
 logger = get_logger()
 
