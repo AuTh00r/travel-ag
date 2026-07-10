@@ -35,6 +35,12 @@ def configure_logging() -> None:
         force=True,
     )
 
+    # httpx/httpcore логируют каждый запрос на INFO, включая полный URL —
+    # а Instagram Graph API передаёт access_token прямо в query-параметре.
+    # Без этого токен утекал бы в logs/bot.log при каждой отправке сообщения.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,
