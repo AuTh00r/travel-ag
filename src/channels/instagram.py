@@ -491,6 +491,11 @@ class InstagramChannel(ChannelBase):
                     self._username_cache[sender_id] = username
                     if len(self._username_cache) > self._USERNAME_CACHE_MAX:
                         self._username_cache.pop(next(iter(self._username_cache)))
+                    logger.info(
+                        "instagram.get_username.success",
+                        sender_id=sender_id,
+                        username=username,
+                    )
                     return username
             except Exception:
                 logger.debug("instagram.get_username.failed", sender_id=sender_id)
