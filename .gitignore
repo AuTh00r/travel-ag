@@ -37,3 +37,6 @@ tours/_analysis.json
 
 
 .env_old
+
+# Exported conversation logs
+context.md
