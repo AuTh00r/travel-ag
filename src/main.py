@@ -240,7 +240,7 @@ _ESCALATION_RE = re.compile(
 
 
 def _extract_escalation(text: str) -> dict | None:
-    """Парсит ===МЕНЕДЖЕР=== и возвращает dict с ключами reason, context, name, phone.
+    """Парсит ===МЕНЕДЖЕР=== и возвращает dict с ключами reason, context, name, phone, type.
 
     Если маркера нет — None.
     """
@@ -261,9 +261,12 @@ def _extract_escalation(text: str) -> dict | None:
             result["name"] = val.strip()
         elif key_s == "телефон":
             result["phone"] = val.strip()
+        elif key_s == "тип":
+            result["type"] = val.strip()
     if not result.get("reason"):
         result["reason"] = m.group(1).strip()
     result.setdefault("context", result["reason"])
+    result.setdefault("type", "Нужен звонок")
     return result
 
 
@@ -444,6 +447,7 @@ async def process_with_ai(sender_id: str, text: str) -> None:
         escalation_context = (escalation_data or {}).get("context")
         escalation_name = (escalation_data or {}).get("name")
         escalation_phone = (escalation_data or {}).get("phone")
+        escalation_type = (escalation_data or {}).get("type", "Нужен звонок")
 
         if "===МЕНЕДЖЕР" in raw_reply and not escalation_data:
             logger.warning("marker.parse_failed", marker_type="escalation", snippet=raw_reply[-500:])
@@ -463,7 +467,7 @@ async def process_with_ai(sender_id: str, text: str) -> None:
                         context=escalation_context,
                         client_name=escalation_name,
                         client_phone=escalation_phone,
-                        tag="Нужен звонок",
+                        tag=escalation_type,
                     )
                     escalation_count += 1
                 except Exception:

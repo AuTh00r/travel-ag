@@ -15,6 +15,7 @@ class TestExtractEscalation:
         assert result == {
             "reason": "просит менеджера",
             "context": "ищет тур в Турцию",
+            "type": "Нужен звонок",
         }
 
     def test_extract_escalation_without_context(self):
@@ -23,16 +24,27 @@ class TestExtractEscalation:
         assert result == {
             "reason": "просит менеджера",
             "context": "просит менеджера",
+            "type": "Нужен звонок",
         }
 
     def test_extract_escalation_with_name_and_phone(self):
-        text = "ответ\n\n===МЕНЕДЖЕР===\nПричина: просит менеджера\nКонтекст: ищет тур\nИмя: Иван\nТелефон: +375291234567\n===МЕНЕДЖЕР==="
+        text = "ответ\n\n===МЕНЕДЖЕР===\nТип: консультация\nПричина: просит менеджера\nКонтекст: ищет тур\nИмя: Иван\nТелефон: +375291234567\n===МЕНЕДЖЕР==="
         result = _extract_escalation(text)
         assert result == {
             "reason": "просит менеджера",
             "context": "ищет тур",
             "name": "Иван",
             "phone": "+375291234567",
+            "type": "консультация",
+        }
+
+    def test_extract_escalation_with_review_type(self):
+        text = "ответ\n\n===МЕНЕДЖЕР===\nТип: отзыв\nПричина: клиент оставил отзыв о туре\nКонтекст: благодарит за организацию\n===МЕНЕДЖЕР==="
+        result = _extract_escalation(text)
+        assert result == {
+            "reason": "клиент оставил отзыв о туре",
+            "context": "благодарит за организацию",
+            "type": "отзыв",
         }
 
     def test_extract_escalation_no_marker(self):
