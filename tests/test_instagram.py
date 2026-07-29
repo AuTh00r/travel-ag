@@ -595,7 +595,7 @@ class TestNonTextParser:
         assert ev["non_text"]["has_text"] is True
 
     @pytest.mark.asyncio
-    async def test_reply_to(self):
+    async def test_inline_reply_with_text_stays_user(self):
         from src.channels.instagram import InstagramChannel
 
         channel = InstagramChannel()
@@ -605,6 +605,7 @@ class TestNonTextParser:
                     "sender": {"id": "CLIENT_42"},
                     "message": {
                         "reply_to": {"mid": "some_mid"},
+                        "text": "Отвечаю на сообщение",
                         "mid": "mid_reply_1",
                     },
                 }]
@@ -613,11 +614,11 @@ class TestNonTextParser:
         events = await channel.receive_message(payload)
         assert len(events) == 1
         ev = events[0]
-        assert ev["kind"] == "user_non_text"
-        assert "story_reply_or_reply" in ev["non_text"]["types"]
+        assert ev["kind"] == "user"
+        assert ev["text"] == "Отвечаю на сообщение"
 
     @pytest.mark.asyncio
-    async def test_referral(self):
+    async def test_story_reply_stays_non_text(self):
         from src.channels.instagram import InstagramChannel
 
         channel = InstagramChannel()
@@ -626,8 +627,13 @@ class TestNonTextParser:
                 "messaging": [{
                     "sender": {"id": "CLIENT_42"},
                     "message": {
-                        "referral": {"source": "story"},
-                        "mid": "mid_ref_1",
+                        "reply_to": {
+                            "story": {
+                                "id": "story_1",
+                                "url": "https://example.com/story.jpg",
+                            }
+                        },
+                        "mid": "mid_story_1",
                     },
                 }]
             }]
@@ -636,7 +642,68 @@ class TestNonTextParser:
         assert len(events) == 1
         ev = events[0]
         assert ev["kind"] == "user_non_text"
-        assert "referral_or_shared_post" in ev["non_text"]["types"]
+        assert "story_reply" in ev["non_text"]["types"]
+
+    @pytest.mark.asyncio
+    async def test_ad_referral_with_text_stays_user(self):
+        """Production shape: рекламный referral не является вложением."""
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "text": "Визы нет. Пришлите варианты туров.",
+                        "referral": {
+                            "source": "ADS",
+                            "type": "OPEN_THREAD",
+                            "ad_id": "AD_123",
+                            "ads_context_data": {
+                                "ad_title": "Туры с визовой поддержкой",
+                                "photo_url": "https://example.com/ad.jpg",
+                                "video_url": "https://example.com/ad.mp4",
+                            },
+                        },
+                        "mid": "mid_ad_1",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert events == [{
+            "kind": "user",
+            "sender_id": "CLIENT_42",
+            "text": "Визы нет. Пришлите варианты туров.",
+            "mid": "mid_ad_1",
+            "referral": {
+                "source": "ADS",
+                "type": "OPEN_THREAD",
+                "ad_id": "AD_123",
+                "ad_title": "Туры с визовой поддержкой",
+            },
+        }]
+
+    @pytest.mark.asyncio
+    async def test_referral_without_text_is_logged_only(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "recipient": {"id": "BUSINESS_1"},
+                    "referral": {
+                        "source": "ADS",
+                        "type": "OPEN_THREAD",
+                        "ad_id": "AD_123",
+                    },
+                }]
+            }]
+        }
+        assert await channel.receive_message(payload) == []
 
     @pytest.mark.asyncio
     async def test_plain_text_stays_user(self):
@@ -832,6 +899,40 @@ class TestNonTextWebhook:
         mock_process.assert_awaited_once()
         args, _ = mock_process.await_args
         assert args[0] == "CLIENT_42"
+
+    @patch("src.main._process_non_text_safely")
+    @patch("src.main._process_safely")
+    def test_ad_referral_with_text_uses_plain_ai_path(
+        self,
+        mock_ai_process,
+        mock_non_text_process,
+    ):
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_AD"},
+                    "message": {
+                        "text": "Визы нет. Пришлите варианты туров.",
+                        "referral": {
+                            "source": "ADS",
+                            "type": "OPEN_THREAD",
+                            "ad_id": "AD_123",
+                            "ads_context_data": {
+                                "ad_title": "Туры с визовой поддержкой",
+                            },
+                        },
+                        "mid": "mid_ad_webhook_1",
+                    },
+                }]
+            }]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_ai_process.assert_awaited_once_with(
+            "CLIENT_AD",
+            "Визы нет. Пришлите варианты туров.",
+        )
+        mock_non_text_process.assert_not_awaited()
 
     @patch("src.main._process_non_text_safely")
     def test_dedup_skips_duplicate_non_text_mid(self, mock_process):

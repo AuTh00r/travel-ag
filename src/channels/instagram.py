@@ -101,10 +101,14 @@ class InstagramChannel(ChannelBase):
 
     @staticmethod
     def _extract_non_text_metadata(message: dict) -> dict:
-        """Проверить наличие non-text сигналов: attachments, reply_to, referral.
+        """Проверить наличие настоящих non-text сигналов.
 
         Возвращает пустой dict, если сигналов нет.
         Если сигналы есть — структуру с types, summary, has_text, text, raw_keys.
+
+        referral — это контекст входа из рекламы/ссылки, а обычный reply_to.mid
+        — контекст inline-ответа. Они не являются вложениями. Из reply_to
+        non-text считается только ответ на story, содержимое которой бот не видит.
         """
         types: list[str] = []
         raw_keys: list[str] = []
@@ -116,13 +120,10 @@ class InstagramChannel(ChannelBase):
                 types.append(atype)
             raw_keys.append("attachments")
 
-        if message.get("reply_to"):
-            types.append("story_reply_or_reply")
+        reply_to = message.get("reply_to")
+        if isinstance(reply_to, dict) and reply_to.get("story"):
+            types.append("story_reply")
             raw_keys.append("reply_to")
-
-        if message.get("referral"):
-            types.append("referral_or_shared_post")
-            raw_keys.append("referral")
 
         if not types:
             return {}
@@ -137,6 +138,23 @@ class InstagramChannel(ChannelBase):
             "text": text,
             "raw_keys": raw_keys,
         }
+
+    @staticmethod
+    def _extract_referral_metadata(message: dict, messaging: dict) -> dict | None:
+        """Извлечь безопасный контекст referral без media URL и raw payload."""
+        referral = message.get("referral") or messaging.get("referral")
+        if not isinstance(referral, dict):
+            return None
+
+        metadata = {
+            key: referral[key]
+            for key in ("source", "type", "ad_id")
+            if referral.get(key) is not None
+        }
+        ads_context = referral.get("ads_context_data")
+        if isinstance(ads_context, dict) and ads_context.get("ad_title") is not None:
+            metadata["ad_title"] = ads_context["ad_title"]
+        return metadata
 
     async def receive_message(self, payload: dict) -> list[dict]:
         """Разобрать входящий webhook от Instagram.
@@ -175,6 +193,19 @@ class InstagramChannel(ChannelBase):
                 if not sender_id:
                     continue
                 mid = message.get("mid", "")
+                text = message.get("text", "")
+                referral = self._extract_referral_metadata(message, messaging)
+                if referral is not None:
+                    logger.info(
+                        "instagram.referral.received",
+                        sender_id=sender_id,
+                        mid=mid,
+                        has_text=bool(text),
+                        source=referral.get("source"),
+                        referral_type=referral.get("type"),
+                        ad_id=referral.get("ad_id"),
+                        ad_title=referral.get("ad_title"),
+                    )
 
                 non_text = self._extract_non_text_metadata(message)
                 if non_text:
@@ -194,18 +225,24 @@ class InstagramChannel(ChannelBase):
                             "non_text": non_text,
                         }
                     )
+                    if referral is not None:
+                        events[-1]["referral"] = referral
                 else:
-                    text = message.get("text", "")
                     if text:
                         logger.info("instagram.message.received", sender_id=sender_id)
-                        events.append(
-                            {
-                                "kind": "user",
-                                "sender_id": sender_id,
-                                "text": text,
-                                "mid": mid,
-                            }
-                        )
+                        event = {
+                            "kind": "user",
+                            "sender_id": sender_id,
+                            "text": text,
+                            "mid": mid,
+                        }
+                        if referral is not None:
+                            event["referral"] = referral
+                        events.append(event)
+                    elif referral is not None:
+                        # Самостоятельный referral открывает/возобновляет диалог,
+                        # но не содержит вопроса, на который нужно отвечать.
+                        continue
                     elif mid:
                         logger.warning(
                             "instagram.message.unsupported",
