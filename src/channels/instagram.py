@@ -13,6 +13,8 @@ from src.exceptions import InstagramError, InstagramRateLimitError
 
 logger = get_logger()
 
+_SHARED_POST_TYPES = frozenset({"ig_post"})
+
 
 class _MidSet:
     """Множество message_id с гарантированной FIFO-эвикцией по размеру.
@@ -146,6 +148,12 @@ class InstagramChannel(ChannelBase):
         }
 
     @staticmethod
+    def _is_shared_post(non_text: dict) -> bool:
+        """True только для публикации/Reel, присланной как Instagram `ig_post`."""
+        types = set(non_text.get("types", []))
+        return bool(types) and types.issubset(_SHARED_POST_TYPES)
+
+    @staticmethod
     def _is_reaction_only(text: str) -> bool:
         """True для непустого текста без букв и цифр: emoji/символы/пунктуация."""
         stripped = text.strip()
@@ -251,6 +259,7 @@ class InstagramChannel(ChannelBase):
 
                 non_text = self._extract_non_text_metadata(message)
                 if non_text:
+                    is_shared_post = self._is_shared_post(non_text)
                     logger.info(
                         "instagram.non_text.received",
                         sender_id=sender_id,
@@ -258,15 +267,45 @@ class InstagramChannel(ChannelBase):
                         types=non_text["types"],
                         has_text=non_text["has_text"],
                     )
-                    events.append(
-                        {
-                            "kind": "user_non_text",
-                            "sender_id": sender_id,
-                            "text": non_text["text"],
-                            "mid": mid,
-                            "non_text": non_text,
-                        }
-                    )
+                    if is_shared_post and text.strip():
+                        logger.info(
+                            "instagram.shared_post.with_text",
+                            sender_id=sender_id,
+                            mid=mid,
+                        )
+                        events.append(
+                            {
+                                "kind": "user",
+                                "sender_id": sender_id,
+                                "text": text,
+                                "mid": mid,
+                            }
+                        )
+                    elif is_shared_post:
+                        logger.info(
+                            "instagram.shared_post.received",
+                            sender_id=sender_id,
+                            mid=mid,
+                        )
+                        events.append(
+                            {
+                                "kind": "user_shared_post",
+                                "sender_id": sender_id,
+                                "text": "",
+                                "mid": mid,
+                                "shared_post": non_text,
+                            }
+                        )
+                    else:
+                        events.append(
+                            {
+                                "kind": "user_non_text",
+                                "sender_id": sender_id,
+                                "text": non_text["text"],
+                                "mid": mid,
+                                "non_text": non_text,
+                            }
+                        )
                     if referral is not None:
                         events[-1]["referral"] = referral
                 else:
@@ -299,14 +338,14 @@ class InstagramChannel(ChannelBase):
 
     @staticmethod
     def _merge_sender_events(events: list[dict]) -> list[dict]:
-        """Смержить user и user_non_text события одного отправителя.
+        """Смержить связанные события одного отправителя внутри webhook.
 
-        Meta часто присылает shared post и текст как два отдельных messaging-события
-        в одном webhook. Если у отправителя есть оба типа в одном батче:
-        - текст из user-события переносится в user_non_text
-        - одно из событий удаляется (дубль)
+        Для shared post сохраняется обычное текстовое событие, а `mid`
+        публикации добавляется в related_mids для дедупликации. Для остальных
+        non-text событий сохраняется прежнее поведение.
         """
         non_text_map: dict[str, int] = {}  # sender_id → index in events
+        shared_post_map: dict[str, int] = {}
         user_indices: dict[str, list[int]] = {}
         to_drop: set[int] = set()
 
@@ -314,6 +353,9 @@ class InstagramChannel(ChannelBase):
             if ev["kind"] == "user_non_text":
                 sid = ev["sender_id"]
                 non_text_map[sid] = i
+            elif ev["kind"] == "user_shared_post":
+                sid = ev["sender_id"]
+                shared_post_map[sid] = i
             elif ev["kind"] == "user":
                 sid = ev["sender_id"]
                 if sid not in user_indices:
@@ -332,6 +374,21 @@ class InstagramChannel(ChannelBase):
                     nt_ev["non_text"]["text"] = user_ev["text"]
                     nt_ev["non_text"]["has_text"] = True
                 to_drop.add(ui)
+
+        # Shared post — контекст, поэтому оставляем первый обычный текст.
+        for sid, post_idx in shared_post_map.items():
+            if sid not in user_indices:
+                continue
+            user_idx = user_indices[sid][0]
+            user_ev = events[user_idx]
+            post_mid = events[post_idx].get("mid")
+            if post_mid:
+                user_ev.setdefault("related_mids", []).append(post_mid)
+            to_drop.add(post_idx)
+            logger.info(
+                "instagram.shared_post.paired_in_webhook",
+                sender_id=sid,
+            )
 
         return [ev for i, ev in enumerate(events) if i not in to_drop]
 

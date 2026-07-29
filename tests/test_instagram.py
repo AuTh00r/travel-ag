@@ -595,6 +595,52 @@ class TestNonTextParser:
         assert ev["non_text"]["has_text"] is True
 
     @pytest.mark.asyncio
+    async def test_shared_post_with_text_stays_user(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "text": "От Дуная до Босфора",
+                        "attachments": [{"type": "ig_post"}],
+                        "mid": "mid_post_text_1",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert events == [{
+            "kind": "user",
+            "sender_id": "CLIENT_42",
+            "text": "От Дуная до Босфора",
+            "mid": "mid_post_text_1",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_shared_post_without_text_gets_own_event(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "attachments": [{"type": "ig_post"}],
+                        "mid": "mid_post_only_1",
+                    },
+                }]
+            }]
+        }
+        events = await channel.receive_message(payload)
+        assert len(events) == 1
+        assert events[0]["kind"] == "user_shared_post"
+        assert events[0]["shared_post"]["types"] == ["ig_post"]
+
+    @pytest.mark.asyncio
     async def test_inline_reply_with_text_stays_user(self):
         from src.channels.instagram import InstagramChannel
 
@@ -848,8 +894,8 @@ class TestNonTextParser:
         assert events == []
 
     @pytest.mark.asyncio
-    async def test_merge_non_text_with_user_event(self):
-        """user_non_text и user одного sender мержатся в одно событие."""
+    async def test_merge_shared_post_with_user_event(self):
+        """Shared post становится контекстом обычного текста того же sender."""
         from src.channels.instagram import InstagramChannel
 
         channel = InstagramChannel()
@@ -876,9 +922,10 @@ class TestNonTextParser:
         events = await channel.receive_message(payload)
         assert len(events) == 1
         ev = events[0]
-        assert ev["kind"] == "user_non_text"
+        assert ev["kind"] == "user"
         assert ev["text"] == "смотри какой тур"
-        assert ev["non_text"]["has_text"] is True
+        assert ev["mid"] == "mid_text_1"
+        assert ev["related_mids"] == ["mid_post_1"]
 
     @pytest.mark.asyncio
     async def test_merge_only_same_sender(self):
@@ -909,7 +956,7 @@ class TestNonTextParser:
         events = await channel.receive_message(payload)
         assert len(events) == 2
         kinds = [ev["kind"] for ev in events]
-        assert "user_non_text" in kinds
+        assert "user_shared_post" in kinds
         assert "user" in kinds
 
     @pytest.mark.asyncio
@@ -995,6 +1042,120 @@ class TestNonTextWebhook:
         mock_process.assert_awaited_once()
         args, _ = mock_process.await_args
         assert args[0] == "CLIENT_42"
+
+    @patch("src.main._process_non_text_safely")
+    @patch("src.main._process_shared_post_safely")
+    def test_shared_post_without_text_uses_shared_handler(
+        self,
+        mock_shared_process,
+        mock_non_text_process,
+    ):
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_POST_ONLY"},
+                    "message": {
+                        "attachments": [{"type": "ig_post"}],
+                        "mid": "mid_shared_webhook_1",
+                    },
+                }]
+            }]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_shared_process.assert_awaited_once()
+        assert mock_shared_process.await_args[0][0] == "CLIENT_POST_ONLY"
+        mock_non_text_process.assert_not_awaited()
+
+    @patch("src.main._process_non_text_safely")
+    @patch("src.main._process_shared_post_safely")
+    @patch("src.main._process_safely")
+    def test_shared_post_with_text_uses_plain_ai_path(
+        self,
+        mock_ai_process,
+        mock_shared_process,
+        mock_non_text_process,
+    ):
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_POST_TEXT"},
+                    "message": {
+                        "text": "От Дуная до Босфора",
+                        "attachments": [{"type": "ig_post"}],
+                        "mid": "mid_shared_text_webhook_1",
+                    },
+                }]
+            }]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_ai_process.assert_awaited_once_with(
+            "CLIENT_POST_TEXT",
+            "От Дуная до Босфора",
+        )
+        mock_shared_process.assert_not_awaited()
+        mock_non_text_process.assert_not_awaited()
+
+    @patch("src.main._process_shared_post_safely")
+    @patch("src.main._process_safely")
+    def test_merged_shared_post_deduplicates_both_mids(
+        self,
+        mock_ai_process,
+        mock_shared_process,
+    ):
+        merged_payload = {
+            "entry": [{
+                "messaging": [
+                    {
+                        "sender": {"id": "CLIENT_POST_MERGED"},
+                        "message": {
+                            "attachments": [{"type": "ig_post"}],
+                            "mid": "mid_shared_merged_post_1",
+                        },
+                    },
+                    {
+                        "sender": {"id": "CLIENT_POST_MERGED"},
+                        "message": {
+                            "text": "От Дуная до Босфора",
+                            "mid": "mid_shared_merged_text_1",
+                        },
+                    },
+                ]
+            }]
+        }
+        client.post("/webhook/instagram", json=merged_payload)
+        mock_ai_process.assert_awaited_once_with(
+            "CLIENT_POST_MERGED",
+            "От Дуная до Босфора",
+        )
+
+        post_retry = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_POST_MERGED"},
+                    "message": {
+                        "attachments": [{"type": "ig_post"}],
+                        "mid": "mid_shared_merged_post_1",
+                    },
+                }]
+            }]
+        }
+        text_retry = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_POST_MERGED"},
+                    "message": {
+                        "text": "От Дуная до Босфора",
+                        "mid": "mid_shared_merged_text_1",
+                    },
+                }]
+            }]
+        }
+        client.post("/webhook/instagram", json=post_retry)
+        client.post("/webhook/instagram", json=text_retry)
+        assert mock_ai_process.await_count == 1
+        mock_shared_process.assert_not_awaited()
 
     @patch("src.main._process_non_text_safely")
     @patch("src.main._process_safely")
@@ -1398,6 +1559,91 @@ class TestNonTextProcessing:
 
         # Ничего не отправлено
         mock_send.assert_not_awaited()
+
+
+class TestSharedPostProcessing:
+    """Отложенная обработка публикации Instagram без подписи."""
+
+    def setup_method(self):
+        from src.main import _in_ai_processing
+
+        _in_ai_processing.clear()
+
+    @pytest.mark.asyncio
+    @patch("asyncio.sleep", return_value=None)
+    @patch("src.services.telegram_notify.TelegramNotifier")
+    @patch("src.main.instagram.send_message")
+    @patch("src.main.instagram.get_username")
+    @patch("src.main.get_session")
+    @patch("src.main.save_session")
+    @patch("src.main.is_manager_active")
+    async def test_shared_post_clarifies_and_notifies_manager(
+        self,
+        mock_is_active,
+        mock_save,
+        mock_get_session,
+        mock_get_username,
+        mock_send,
+        mock_notifier_cls,
+        mock_sleep,
+    ):
+        from src.main import (
+            _SHARED_POST_CLARIFICATION,
+            _in_ai_processing,
+            _process_shared_post_safely,
+        )
+
+        # Старая AI-обработка не должна скрывать новую публикацию.
+        _in_ai_processing["CLIENT_SHARED_ONLY"] = 99.0
+        session = {"history": [], "escalation_count": 0}
+        mock_is_active.return_value = False
+        mock_get_session.return_value = session
+        mock_get_username.return_value = "test_user"
+        mock_send.return_value = None
+        mock_notifier = AsyncMock()
+        mock_notifier_cls.return_value = mock_notifier
+
+        await _process_shared_post_safely("CLIENT_SHARED_ONLY", received_at=100.0)
+
+        mock_sleep.assert_awaited_once_with(5)
+        mock_notifier.notify_manager.assert_awaited_once()
+        mock_send.assert_awaited_once_with(
+            "CLIENT_SHARED_ONLY",
+            _SHARED_POST_CLARIFICATION,
+        )
+        assert session["escalation_count"] == 1
+        assert session["history"] == [{
+            "role": "assistant",
+            "content": _SHARED_POST_CLARIFICATION,
+        }]
+        assert all(
+            "Instagram non-text" not in item["content"]
+            for item in session["history"]
+        )
+        assert mock_save.await_count == 2
+
+    @pytest.mark.asyncio
+    @patch("asyncio.sleep", return_value=None)
+    @patch("src.services.telegram_notify.TelegramNotifier")
+    @patch("src.main.instagram.send_message")
+    @patch("src.main.get_session")
+    async def test_shared_post_is_silent_when_later_text_started_ai(
+        self,
+        mock_get_session,
+        mock_send,
+        mock_notifier_cls,
+        mock_sleep,
+    ):
+        from src.main import _in_ai_processing, _process_shared_post_safely
+
+        _in_ai_processing["CLIENT_SHARED_PAIRED"] = 101.0
+
+        await _process_shared_post_safely("CLIENT_SHARED_PAIRED", received_at=100.0)
+
+        mock_sleep.assert_awaited_once_with(5)
+        mock_get_session.assert_not_awaited()
+        mock_send.assert_not_awaited()
+        mock_notifier_cls.assert_not_called()
 
 
 class TestMessageLostLogging:

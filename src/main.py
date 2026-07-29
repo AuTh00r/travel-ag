@@ -55,10 +55,15 @@ _locks_lock = asyncio.Lock()
 
 # Meta присылает shared post и текст в отдельных POST-запросах (~2s apart).
 # _in_ai_processing фиксирует sender_id, для которого запущена AI-обработка.
-# _process_non_text_safely проверяет этот dict и пропускает auto-ack,
-# если AI уже отвечает или скоро ответит.
+# Обработчик shared post проверяет точное время этой отметки, чтобы отличить
+# пояснение к публикации от более старого сообщения того же клиента.
 _in_ai_processing: dict[str, float] = {}
 _AI_PROCESSING_TTL = 30.0  # секунд
+_SHARED_POST_WAIT_SECONDS = 5
+_SHARED_POST_CLARIFICATION = (
+    "Подскажите, пожалуйста, что именно вас заинтересовало в публикации: "
+    "название тура, направление, даты или стоимость?"
+)
 
 
 @asynccontextmanager
@@ -642,6 +647,98 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
         await _send_or_queue(sender_id, fallback_text)
 
 
+async def _process_shared_post_safely(sender_id: str, received_at: float) -> None:
+    """Подождать подпись к публикации, иначе уточнить запрос и уведомить менеджера."""
+    try:
+        await asyncio.sleep(_SHARED_POST_WAIT_SECONDS)
+
+        ai_started_at = _in_ai_processing.get(sender_id)
+        if ai_started_at is not None and ai_started_at >= received_at:
+            logger.info(
+                "instagram.shared_post.paired_with_text",
+                sender_id=sender_id,
+            )
+            return
+
+        pre = await get_session(sender_id)
+        if is_manager_active(pre, settings.manager_takeover_ttl_minutes):
+            lock = await _get_lock(sender_id)
+            async with lock:
+                session = await get_session(sender_id)
+                if is_manager_active(session, settings.manager_takeover_ttl_minutes):
+                    logger.info(
+                        "manager.active.skip_shared_post",
+                        sender_id=sender_id,
+                    )
+                    return
+
+        from src.services.telegram_notify import TelegramNotifier
+
+        lock = await _get_lock(sender_id)
+        async with lock:
+            session = await get_session(sender_id)
+            instagram_handle = await instagram.get_username(sender_id)
+            escalation_count = session.get("escalation_count", 0)
+
+            if escalation_count < 3:
+                try:
+                    notifier = TelegramNotifier()
+                    await notifier.notify_manager(
+                        sender_id=sender_id,
+                        instagram_handle=instagram_handle,
+                        context=(
+                            "Клиент поделился публикацией Instagram без подписи. "
+                            "Бот попросил уточнить, что именно его заинтересовало."
+                        ),
+                        tag="Shared post",
+                    )
+                    escalation_count += 1
+                    logger.info(
+                        "instagram.shared_post.escalated",
+                        sender_id=sender_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "instagram.shared_post.notify_failed",
+                        sender_id=sender_id,
+                    )
+            else:
+                logger.info(
+                    "instagram.shared_post.escalation_skipped_limit",
+                    sender_id=sender_id,
+                    count=escalation_count,
+                )
+
+            session["escalation_count"] = escalation_count
+            session["last_message_at"] = datetime.now(timezone.utc).isoformat()
+            await save_session(sender_id, session)
+
+        ok, _ = await _send_or_queue(sender_id, _SHARED_POST_CLARIFICATION)
+        if not ok:
+            return
+
+        lock = await _get_lock(sender_id)
+        async with lock:
+            session = await get_session(sender_id)
+            history = session.get("history", [])
+            history.append(
+                {"role": "assistant", "content": _SHARED_POST_CLARIFICATION}
+            )
+            session["history"] = history
+            session["last_message_at"] = datetime.now(timezone.utc).isoformat()
+            await save_session(sender_id, session)
+
+        logger.info(
+            "instagram.shared_post.clarification_sent",
+            sender_id=sender_id,
+        )
+    except Exception:
+        logger.exception(
+            "instagram.shared_post.processing_failed",
+            sender_id=sender_id,
+        )
+
+
 async def _process_safely(sender_id: str, text: str) -> None:
     """Фоновая обработка сообщения.
 
@@ -756,21 +853,21 @@ async def receive_instagram_message(request: Request):
     logger.info("instagram.webhook.received", events=len(events))
 
     # Запускаем обработку в фоне и отвечаем Meta 200 мгновенно.
-    # Сначала отмечаем sender'ов, для которых будет AI-обработка.
-    # Это нужно, чтобы _process_non_text_safely мог пропустить auto-ack,
-    # если AI уже обрабатывает текст клиента.
     import time as _time
-    for ev in events:
-        if ev["kind"] in ("user", "user_non_text") and ev.get("text"):
-            _in_ai_processing[ev["sender_id"]] = _time.monotonic()
 
     for ev in events:
         mid = ev.get("mid", "")
-        if mid:
-            if mid in _processed_mids:
-                logger.info("instagram.webhook.dedup_skipped", mid=mid)
+        mids = [mid, *ev.get("related_mids", [])]
+        mids = list(dict.fromkeys(message_id for message_id in mids if message_id))
+        if mids:
+            duplicate_mid = next(
+                (message_id for message_id in mids if message_id in _processed_mids),
+                None,
+            )
+            if duplicate_mid:
+                logger.info("instagram.webhook.dedup_skipped", mid=duplicate_mid)
                 continue
-            _processed_mids.add(mid)
+            _processed_mids.update(mids)
             if len(_processed_mids) > _PROCESSED_MIDS_MAX:
                 excess = len(_processed_mids) - _PROCESSED_MIDS_MAX
                 for _ in range(excess):
@@ -779,9 +876,23 @@ async def receive_instagram_message(request: Request):
             logger.warning("instagram.message.no_mid", kind=ev.get("kind"))
             continue
 
+        if ev["kind"] in ("user", "user_non_text") and ev.get("text"):
+            _in_ai_processing[ev["sender_id"]] = _time.monotonic()
+
         if ev["kind"] == "manager":
             task = asyncio.create_task(
                 _mark_manager_active(ev["client_id"], ev.get("text", ""))
+            )
+        elif ev["kind"] == "user_shared_post":
+            logger.info(
+                "instagram.shared_post.processing",
+                sender_id=ev["sender_id"],
+            )
+            task = asyncio.create_task(
+                _process_shared_post_safely(
+                    ev["sender_id"],
+                    _time.monotonic(),
+                )
             )
         elif ev["kind"] == "user_non_text":
             nt_text = ev.get("text", "")

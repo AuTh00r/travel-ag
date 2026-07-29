@@ -105,6 +105,21 @@ def test_build_full_prompt_includes_faq():
     assert "Виза в Турцию" in messages[0].content
 
 
+def test_build_full_prompt_distinguishes_ambiguous_query_from_attachment():
+    from src.ai.prompts import build_full_prompt
+
+    messages = build_full_prompt(
+        tours_text="",
+        faq_context="",
+        history=[],
+        message="Сколько стоит?",
+    )
+    system_prompt = messages[0].content
+    assert "ОДИН конкретный уточняющий вопрос" in system_prompt
+    assert "одновременно сообщи, что передаёшь запрос менеджеру" in system_prompt
+    assert "Только если ТЕКУЩЕЕ сообщение содержит служебную пометку" in system_prompt
+
+
 # --- Integration smoke test ---
 
 
