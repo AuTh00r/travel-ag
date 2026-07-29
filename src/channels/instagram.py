@@ -108,7 +108,7 @@ class InstagramChannel(ChannelBase):
 
         referral — это контекст входа из рекламы/ссылки, а обычный reply_to.mid
         — контекст inline-ответа. Они не являются вложениями. Из reply_to
-        non-text считается только ответ на story, содержимое которой бот не видит.
+        non-text считается только story без содержательного текста.
         """
         types: list[str] = []
         raw_keys: list[str] = []
@@ -121,7 +121,13 @@ class InstagramChannel(ChannelBase):
             raw_keys.append("attachments")
 
         reply_to = message.get("reply_to")
-        if isinstance(reply_to, dict) and reply_to.get("story"):
+        text = message.get("text")
+        has_meaningful_text = isinstance(text, str) and bool(text.strip())
+        if (
+            isinstance(reply_to, dict)
+            and reply_to.get("story")
+            and not has_meaningful_text
+        ):
             types.append("story_reply")
             raw_keys.append("reply_to")
 
@@ -138,6 +144,12 @@ class InstagramChannel(ChannelBase):
             "text": text,
             "raw_keys": raw_keys,
         }
+
+    @staticmethod
+    def _is_reaction_only(text: str) -> bool:
+        """True для непустого текста без букв и цифр: emoji/символы/пунктуация."""
+        stripped = text.strip()
+        return bool(stripped) and not any(char.isalnum() for char in stripped)
 
     @staticmethod
     def _extract_referral_metadata(message: dict, messaging: dict) -> dict | None:
@@ -161,7 +173,7 @@ class InstagramChannel(ChannelBase):
 
         Возвращает список событий:
           {"kind": "user",        "sender_id", "text", "mid"}        — текстовое сообщение
-          {"kind": "user_non_text", "sender_id", "text", "mid", "non_text"} — вложение/пост/story reply
+          {"kind": "user_non_text", "sender_id", "text", "mid", "non_text"} — вложение/пост/story без текста
           {"kind": "manager",     "client_id", "text", "mid"}        — живой менеджер ответил
         Эхо собственных ответов бота отфильтровывается (is_own_message).
         """
@@ -192,8 +204,38 @@ class InstagramChannel(ChannelBase):
                 sender_id = messaging.get("sender", {}).get("id")
                 if not sender_id:
                     continue
+                reaction = messaging.get("reaction")
+                if isinstance(reaction, dict):
+                    logger.info(
+                        "instagram.reaction.ignored",
+                        sender_id=sender_id,
+                        mid=reaction.get("mid"),
+                        action=reaction.get("action"),
+                    )
+                    continue
+
                 mid = message.get("mid", "")
-                text = message.get("text", "")
+                raw_text = message.get("text")
+                text = raw_text if isinstance(raw_text, str) else ""
+                reply_to = message.get("reply_to")
+                is_story_reply = (
+                    isinstance(reply_to, dict)
+                    and isinstance(reply_to.get("story"), dict)
+                )
+                if is_story_reply and self._is_reaction_only(text):
+                    logger.info(
+                        "instagram.story_reaction.ignored",
+                        sender_id=sender_id,
+                        mid=mid,
+                    )
+                    continue
+                if is_story_reply and text.strip():
+                    logger.info(
+                        "instagram.story_reply.text_received",
+                        sender_id=sender_id,
+                        mid=mid,
+                    )
+
                 referral = self._extract_referral_metadata(message, messaging)
                 if referral is not None:
                     logger.info(

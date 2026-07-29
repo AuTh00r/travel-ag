@@ -644,6 +644,102 @@ class TestNonTextParser:
         assert ev["kind"] == "user_non_text"
         assert "story_reply" in ev["non_text"]["types"]
 
+    @pytest.mark.parametrize("reaction_text", ["❤️", "🔥🔥", "😍!"])
+    @pytest.mark.asyncio
+    async def test_story_emoji_reaction_is_ignored(self, reaction_text):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "reply_to": {
+                            "story": {
+                                "id": "story_1",
+                                "url": "https://example.com/story.jpg",
+                            }
+                        },
+                        "text": reaction_text,
+                        "mid": "mid_story_reaction_1",
+                    },
+                }]
+            }]
+        }
+        assert await channel.receive_message(payload) == []
+
+    @pytest.mark.asyncio
+    async def test_story_reply_with_meaningful_text_stays_user(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "reply_to": {
+                            "story": {
+                                "id": "story_1",
+                                "url": "https://example.com/story.jpg",
+                            }
+                        },
+                        "text": "🔥 Сколько стоит?",
+                        "mid": "mid_story_text_1",
+                    },
+                }]
+            }]
+        }
+        assert await channel.receive_message(payload) == [{
+            "kind": "user",
+            "sender_id": "CLIENT_42",
+            "text": "🔥 Сколько стоит?",
+            "mid": "mid_story_text_1",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_explicit_reaction_event_is_ignored(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "reaction": {
+                        "mid": "story_mid_1",
+                        "action": "react",
+                        "reaction": "love",
+                    },
+                }]
+            }]
+        }
+        assert await channel.receive_message(payload) == []
+
+    @pytest.mark.asyncio
+    async def test_plain_emoji_message_stays_user(self):
+        from src.channels.instagram import InstagramChannel
+
+        channel = InstagramChannel()
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_42"},
+                    "message": {
+                        "text": "❤️",
+                        "mid": "mid_plain_emoji_1",
+                    },
+                }]
+            }]
+        }
+        assert await channel.receive_message(payload) == [{
+            "kind": "user",
+            "sender_id": "CLIENT_42",
+            "text": "❤️",
+            "mid": "mid_plain_emoji_1",
+        }]
+
     @pytest.mark.asyncio
     async def test_ad_referral_with_text_stays_user(self):
         """Production shape: рекламный referral не является вложением."""
@@ -932,6 +1028,91 @@ class TestNonTextWebhook:
             "CLIENT_AD",
             "Визы нет. Пришлите варианты туров.",
         )
+        mock_non_text_process.assert_not_awaited()
+
+    @patch("src.main._process_non_text_safely")
+    @patch("src.main._process_safely")
+    def test_story_emoji_reaction_calls_no_handlers(
+        self,
+        mock_ai_process,
+        mock_non_text_process,
+    ):
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_STORY_REACTION"},
+                    "message": {
+                        "reply_to": {
+                            "story": {
+                                "id": "story_1",
+                                "url": "https://example.com/story.jpg",
+                            }
+                        },
+                        "text": "❤️",
+                        "mid": "mid_story_reaction_webhook_1",
+                    },
+                }]
+            }]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_ai_process.assert_not_awaited()
+        mock_non_text_process.assert_not_awaited()
+
+    @patch("src.main._process_non_text_safely")
+    @patch("src.main._process_safely")
+    def test_story_reply_text_uses_plain_ai_path(
+        self,
+        mock_ai_process,
+        mock_non_text_process,
+    ):
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_STORY_TEXT"},
+                    "message": {
+                        "reply_to": {
+                            "story": {
+                                "id": "story_1",
+                                "url": "https://example.com/story.jpg",
+                            }
+                        },
+                        "text": "🔥 Сколько стоит?",
+                        "mid": "mid_story_text_webhook_1",
+                    },
+                }]
+            }]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_ai_process.assert_awaited_once_with(
+            "CLIENT_STORY_TEXT",
+            "🔥 Сколько стоит?",
+        )
+        mock_non_text_process.assert_not_awaited()
+
+    @patch("src.main._process_non_text_safely")
+    @patch("src.main._process_safely")
+    def test_explicit_reaction_calls_no_handlers(
+        self,
+        mock_ai_process,
+        mock_non_text_process,
+    ):
+        payload = {
+            "entry": [{
+                "messaging": [{
+                    "sender": {"id": "CLIENT_REACTION"},
+                    "reaction": {
+                        "mid": "story_mid_1",
+                        "action": "react",
+                        "reaction": "love",
+                    },
+                }]
+            }]
+        }
+        response = client.post("/webhook/instagram", json=payload)
+        assert response.status_code == 200
+        mock_ai_process.assert_not_awaited()
         mock_non_text_process.assert_not_awaited()
 
     @patch("src.main._process_non_text_safely")
