@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<profile>
+ <version>LibreOffice v1</version>
+ <device>
+  <type>opencl</type>
+  <name>NVIDIA GeForce RTX 3050 Laptop GPU</name>
+  <driver>566.07</driver>
+  <time>73249</time>
+  <errors>false</errors>
+ </device>
+ <device>
+  <type>opencl</type>
+  <name>gfx90c</name>
+  <driver>3444.0 (PAL,HSAIL)</driver>
+  <time>71757</time>
+  <errors>false</errors>
+ </device>
+ <device>
+  <type>native</type>
+  <time>1846272</time>
+  <errors>false</errors>
+ </device>
+</profile>
