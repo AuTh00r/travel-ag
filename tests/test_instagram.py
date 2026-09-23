@@ -1509,18 +1509,28 @@ class TestNonTextProcessing:
 
     @pytest.mark.asyncio
     @patch("asyncio.sleep", return_value=None)
+    @patch("src.services.telegram_notify.TelegramNotifier")
     @patch("src.main.instagram.send_message")
     @patch("src.main.get_session")
     async def test_non_text_ack_skipped_when_ai_pending(
         self,
         mock_get_session,
         mock_send,
+        mock_notifier_cls,
         mock_sleep,
     ):
+        from unittest.mock import AsyncMock
+
         from src.main import _in_ai_processing, _process_non_text_safely
 
-        _in_ai_processing["CLIENT_42"] = 999999.0  # не истекло
+        import time as _time
+
+        # Метка в единицах monotonic (как пишет прод-код): now - marker ~= 0 < TTL.
+        # Хардкод 999999.0 здесь нельзя — на машине с аптаймом > ~11.6 суток
+        # now - 999999 > TTL и тест ложно падает (только на прод-сервере).
+        _in_ai_processing["CLIENT_42"] = _time.monotonic()  # не истекло
         mock_get_session.return_value = {"history": [], "escalation_count": 0}
+        mock_notifier_cls.return_value = AsyncMock()
 
         await _process_non_text_safely(
             "CLIENT_42",
