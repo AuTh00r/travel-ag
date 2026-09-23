@@ -276,34 +276,90 @@ Access Token через связку Facebook-страница ↔ Instagram (п
 
 ## 6. Шаблоны текста "How will your app use this permission"
 
+Актуализировано 6 сентября 2026 года для приложения **Travel-agent-bot-new**
+(`1133220645701291`), собственного аккаунта **@sundita.travel** и интеграции
+**Instagram Messaging через Facebook Login**. Ниже — отдельный текст для каждого
+из шести разрешений текущей заявки. Исторические рекомендации этого гайда о
+включении `pages_messaging` не применять к этой заявке: Facebook Messenger бот
+не обслуживает. Не запрашивать `instagram_business_*` другой ветки входа или
+Human Agent для автоматических ответов.
+
+Это описания назначения разрешений, а не замена скринкасту и инструкции для
+ревьюера. Подключение выполняет администратор собственного бизнеса; не описывать
+несуществующий публичный интерфейс подключения сторонних компаний. Токены и
+секреты на скринкасте не показывать.
+
 **`instagram_basic`:**
-> Our app is an AI-powered customer support assistant for a travel agency's
-> Instagram Business account. This permission is used to retrieve basic account
-> metadata (username, profile info) needed to identify which Instagram Business
-> account is connected and to look up customer usernames for internal handoff
-> to human agents.
+> Travel-agent-bot-new is an automated customer support assistant for Sandita
+> Travel Agency's own Instagram professional account, @sundita.travel. We use
+> instagram_basic to identify the professional Instagram account linked to our
+> Facebook Page and as a required permission for the Instagram User Profile API.
+> Together with the other required permissions, this allows our backend to
+> retrieve the name and username of a customer who has messaged our account, so
+> our staff can identify the conversation when human assistance is needed. We
+> do not use this permission to publish content or collect profiles of people
+> who have not interacted with our business.
 
 **`instagram_manage_messages`:**
-> Our app automatically responds to Direct Messages sent to the travel agency's
-> Instagram account. When a customer sends a message asking about tours, prices,
-> or availability, our backend receives it via webhook, generates a relevant
-> answer using an AI model grounded in the agency's actual tour catalog and FAQ,
-> and sends the reply back via the Send API. If the query requires human
-> judgement (e.g. a complex booking request), the app escalates to a human
-> manager via a separate internal notification channel and pauses automated
-> replies for that conversation.
+> Our app receives and replies to Direct Messages that customers send to
+> @sundita.travel, Sandita Travel Agency's own Instagram account. Incoming
+> messages arrive at our backend through Meta webhooks. The backend uses our
+> tour catalog and FAQ with DeepSeek to generate an answer, then sends the
+> response to the same customer through the Instagram Send API. Customers can
+> ask about tours, prices, dates, or request a human manager. When human
+> assistance is needed, the app notifies our staff through a private Telegram
+> channel with the relevant conversation context and any contact details the
+> customer voluntarily supplied. This permission is essential to receive the
+> customer's request and deliver our reply. Our use case is customer-initiated
+> support, not unsolicited promotional messaging.
 
-**`pages_show_list` / `pages_read_engagement`:**
-> These permissions are dependencies of instagram_manage_messages, required to
-> identify and access the Facebook Page connected to our Instagram Business
-> account so the app can obtain the correct Page/Instagram access token.
+**`pages_show_list`:**
+> During administrator setup, we use pages_show_list to retrieve the Facebook
+> Pages available to the authorized administrator through GET /me/accounts.
+> This lets us identify Sandita's own Facebook Page and obtain the Page access
+> token for the Page linked to @sundita.travel. Selecting the correct Page
+> ensures that customer support messages are processed for the intended
+> Instagram business account. We do not aggregate Page lists or use them for
+> advertising. This permission is also listed among the requirements for the
+> Instagram User Profile API used by our backend.
 
-**`pages_messaging` / `pages_manage_metadata`** (подтверждённая живая зависимость
-боевой доставки, см. раздел 0.2 — включать в submission):
-> This permission appears as a platform-required dependency for subscribing to
-> and receiving Instagram Direct message webhooks via the connected Facebook
-> Page. Our app does not independently use Messenger-specific features — all
-> customer interaction happens through Instagram Direct.
+**`pages_read_engagement`:**
+> We request pages_read_engagement because Meta lists it as a required
+> permission for the Instagram User Profile API in our Facebook Login
+> integration. After a customer messages @sundita.travel, our backend calls
+> GET /<INSTAGRAM_SCOPED_USER_ID>?fields=name,username to identify that
+> conversation for internal customer support and handoff to our staff. We do
+> not use this permission to analyze Facebook Page engagement, collect
+> followers, or build marketing audiences. Without this required permission,
+> the profile lookup used to identify the customer cannot be reliably supported.
+
+**`pages_manage_metadata`:**
+> We use pages_manage_metadata to subscribe our app to the messages webhook
+> field for Sandita's Facebook Page, which is linked to @sundita.travel. This
+> subscription allows our backend to receive Instagram messaging events and
+> respond to customer questions. The permission is also a requirement of the
+> Instagram User Profile API used to identify customers during support. We do
+> not use it to change the Page's public content or manage unrelated Page
+> settings. Without the messaging subscription, the assistant cannot receive
+> the events that trigger its replies.
+
+**`business_management`:**
+> We request business_management as a documented dependency of
+> instagram_manage_messages and pages_show_list in our Facebook Login
+> integration. The authorized administrator accesses Sandita's own Facebook
+> Page and linked Instagram account through our business portfolio. This
+> permission supports the administrator's authorization of those business
+> assets so the app can obtain the correct Page access token and provide
+> Instagram customer support. Our app serves only Sandita's own business; it
+> does not onboard unrelated companies, manage advertising campaigns, or modify
+> other businesses' assets. Our screencast will show the administrator's
+> authorization flow and the requested business permissions.
+
+Основания для списка и обоснований:
+
+- [Instagram Messaging — обзор и необходимые разрешения](https://developers.facebook.com/documentation/business-messaging/instagram-messaging/overview)
+- [Instagram User Profile API — требования для name и username](https://developers.facebook.com/documentation/business-messaging/instagram-messaging/features/user-profile)
+- [App Review для собственной компании — instagram_manage_messages и зависимость business_management](https://developers.facebook.com/documentation/business-messaging/instagram-messaging/app-review/apps-for-your-own-business)
 
 ---
 
