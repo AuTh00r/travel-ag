@@ -34,6 +34,8 @@ Thumbs.db
 bot*.log
 logs/
 tours/_analysis.json
+# Office lock files (Word/LibreOffice) — не коммитить
+.~lock.*#
 
 
 .env_old
