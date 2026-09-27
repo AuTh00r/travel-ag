@@ -1475,6 +1475,53 @@ class TestNonTextProcessing:
     @patch("src.main.get_session")
     @patch("src.main.save_session")
     @patch("src.main.is_manager_active")
+    async def test_non_text_ack_tagged_in_history_not_in_sent_text(
+        self,
+        mock_is_active,
+        mock_save,
+        mock_get_session,
+        mock_get_username,
+        mock_send,
+        mock_notifier_cls,
+        mock_sleep,
+    ):
+        """Регрессия прод-кейса 2026-09-26: немаркированный ack про вложение
+        попадал в историю «голосом» ассистента, и на следующий день LLM
+        повторял фразу про вложение на обычный текст."""
+        from src.main import _process_non_text_safely
+
+        mock_is_active.return_value = False
+        mock_get_session.return_value = {"history": [], "escalation_count": 0}
+        mock_get_username.return_value = "test_user"
+        mock_send.return_value = None
+        mock_notifier_cls.return_value = AsyncMock()
+
+        await _process_non_text_safely(
+            "CLIENT_42",
+            "",
+            {"types": ["image"], "summary": "вложение: image"},
+        )
+
+        # Клиенту тег не уходит — отправлен чистый текст
+        ack_text = mock_send.await_args[0][1]
+        assert "Служебное сообщение о вложении" not in ack_text
+
+        # А в истории копия ack помечена служебным тегом
+        saved_session = mock_save.await_args[0][1]
+        assistant_entries = [
+            h for h in saved_session["history"] if h["role"] == "assistant"
+        ]
+        assert assistant_entries
+        assert "Служебное сообщение о вложении" in assistant_entries[-1]["content"]
+
+    @pytest.mark.asyncio
+    @patch("asyncio.sleep", return_value=None)
+    @patch("src.services.telegram_notify.TelegramNotifier")
+    @patch("src.main.instagram.send_message")
+    @patch("src.main.instagram.get_username")
+    @patch("src.main.get_session")
+    @patch("src.main.save_session")
+    @patch("src.main.is_manager_active")
     async def test_non_text_limit_reached_skips_telegram(
         self,
         mock_is_active,

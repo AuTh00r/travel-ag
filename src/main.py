@@ -629,12 +629,22 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
         if not ok:
             return
 
-        # Отправлено успешно — добавляем реплику ассистента в историю
+        # Отправлено успешно — добавляем реплику ассистента в историю.
+        # Копию помечаем служебным тегом: иначе LLM на следующий день видит
+        # фразу про вложение «своей» репликой и повторяет её на обычный текст
+        # (прод-кейс 2026-09-26). Клиенту тег не уходит — ему уже отправлен
+        # чистый client_reply выше.
         lock = await _get_lock(sender_id)
         async with lock:
             session = await get_session(sender_id)
             history = session.get("history", [])
-            history.append({"role": "assistant", "content": client_reply})
+            history.append({
+                "role": "assistant",
+                "content": (
+                    "[Служебное сообщение о вложении из прошлого — "
+                    "не повторять] " + client_reply
+                ),
+            })
             session["history"] = history
             session["last_message_at"] = datetime.now(timezone.utc).isoformat()
             await save_session(sender_id, session)
