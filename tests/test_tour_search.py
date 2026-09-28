@@ -2,7 +2,11 @@
 
 test_tour_search.py сохранён для тестов парсинга DOCX-туров."""
 
-from src.services.tour_loader import _extract_tour_section, _split_tours
+from src.services.tour_loader import (
+    _extract_tour_section,
+    _split_tours,
+    _split_tours_by_headings,
+)
 
 
 def test_extract_tour_section_puts_url_first():
@@ -100,3 +104,46 @@ def test_split_tours_trailing_text_after_last_url():
     result = _split_tours(paragraphs)
     assert len(result) == 3
     assert result[2] == ["Лишний текст без URL"]
+
+
+def test_split_by_headings_preamble_goes_to_notes():
+    """Прод-кейс: преамбула-заголовок без ссылки на бронирование —
+    общая информация, а не фантомный тур."""
+    items = [
+        ("С 01.10.2026 цена поднимается.", True),
+        ("Зимние каникулы в Париже", True),
+        ("Виза: НЕ обязательно", False),
+        ("Ссылка на бронирование - https://sundita.by/tur/paris/", False),
+    ]
+    tour_blocks, notes = _split_tours_by_headings(items)
+    assert len(tour_blocks) == 1
+    assert tour_blocks[0][0] == "Зимние каникулы в Париже"
+    assert notes == ["С 01.10.2026 цена поднимается."]
+
+
+def test_split_by_headings_multi():
+    items = [
+        ("Тур A", True),
+        ("Маршрут: A - B", False),
+        ("Ссылка на бронирование - https://sundita.by/a", False),
+        ("Тур B", True),
+        ("Маршрут: C - D", False),
+        ("Ссылка на бронирование - https://sundita.by/b", False),
+    ]
+    tour_blocks, notes = _split_tours_by_headings(items)
+    assert len(tour_blocks) == 2
+    assert tour_blocks[0][0] == "Тур A"
+    assert tour_blocks[1][0] == "Тур B"
+    assert notes == []
+
+
+def test_split_by_headings_tour_without_booking_url_goes_to_notes():
+    """Тур без ссылки на бронирование не теряет текст — он попадает
+    в общую информацию, а не молча склеивается с соседом."""
+    items = [
+        ("Тур A", True),
+        ("Маршрут: A - B", False),
+    ]
+    tour_blocks, notes = _split_tours_by_headings(items)
+    assert tour_blocks == []
+    assert notes == ["Тур A", "Маршрут: A - B"]

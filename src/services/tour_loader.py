@@ -54,6 +54,34 @@ def _extract_tour_section(filename: str, paragraphs: list[str]) -> str:
     return "\n".join(parts)
 
 
+def _split_tours_by_headings(items: list[tuple[str, bool]]) -> tuple[list[list[str]], list[str]]:
+    """Делить туры по заголовкам Heading.
+
+    items — (текст абзаца, это_заголовок). Новый блок начинается
+    с каждого заголовка. Блок со ссылкой на бронирование — тур,
+    блок без неё (преамбула типа «цены поднимаются») — общая
+    информация, а не фантомный тур.
+    Возвращает (блоки_туров, абзацы_общей_информации).
+    """
+    blocks: list[list[str]] = []
+    current: list[str] = []
+    for text, is_heading in items:
+        if is_heading and current:
+            blocks.append(current)
+            current = []
+        current.append(text)
+    if current:
+        blocks.append(current)
+    tour_blocks: list[list[str]] = []
+    notes: list[str] = []
+    for block in blocks:
+        if any(_BOOKING_URL_RE.search(p) for p in block):
+            tour_blocks.append(block)
+        else:
+            notes.extend(block)
+    return tour_blocks, notes
+
+
 def _split_tours(paragraphs: list[str]) -> list[list[str]]:
     blocks: list[list[str]] = []
     current: list[str] = []
@@ -87,20 +115,34 @@ def load_tours(folder_path: str | None = None) -> str:
 
     path = folder_path or _tours_folder
     all_tours = []
+    general_notes = []
     for filename in sorted(os.listdir(path)):
         if not filename.endswith(".docx"):
             continue
         filepath = os.path.join(path, filename)
         doc = Document(filepath)
-        paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
-        tour_blocks = _split_tours(paragraphs)
+        items = [
+            (p.text, "Heading" in p.style.name)
+            for p in doc.paragraphs if p.text.strip()
+        ]
+        if any(is_heading for _, is_heading in items):
+            tour_blocks, notes = _split_tours_by_headings(items)
+        else:
+            # Fallback для файлов без заголовков: старое деление по ссылкам.
+            tour_blocks = _split_tours([text for text, _ in items])
+            notes = []
         for block in tour_blocks:
             tour_name = block[0].strip().rstrip(":").strip()
             section = _extract_tour_section(tour_name, block)
             all_tours.append(section)
+        general_notes.extend(notes)
         logger.info("tour_loader.loaded", file=filename, tours=len(tour_blocks))
 
-    _tours_text = "\n\n".join(all_tours)
+    parts = []
+    if general_notes:
+        parts.append("=== ОБЩАЯ ИНФОРМАЦИЯ ===\n" + "\n".join(general_notes))
+    parts.extend(all_tours)
+    _tours_text = "\n\n".join(parts)
     logger.info("tour_loader.complete", chars=len(_tours_text), tours=len(all_tours))
     return _tours_text
 
