@@ -176,6 +176,62 @@ def test_current_time_is_last_block():
     )
 
 
+class TestPromptRules:
+    """Правила, которые уже ломались в проде — держим тестами."""
+
+    def _system(self, tours_text: str = "") -> str:
+        from src.ai.prompts import _build_system
+
+        return _build_system(tours_text, "", current_time="10:15")
+
+    def test_russian_only(self):
+        """Разрешение английского было временным, на Meta App Review."""
+        prompt = self._system()
+        assert "Отвечай только по-русски" in prompt
+        assert "английском" not in prompt
+
+    def test_visa_support_never_called_visa_free(self):
+        """Клиенты читали «не обязательно» как «поездка без визы»."""
+        prompt = self._system()
+        assert "визовую поддержку" in prompt
+        assert "«виза не нужна», «без визы», «виза не требуется» для таких туров ЗАПРЕЩЕНЫ" in prompt
+
+    def test_visa_has_three_states(self):
+        from src.services.tour_loader import (
+            VISA_NOT_NEEDED,
+            VISA_REQUIRED,
+            VISA_SUPPORTED,
+        )
+
+        prompt = self._system()
+        # Промпт обязан описывать ровно те значения, которые кладёт загрузчик.
+        for state in (VISA_REQUIRED, VISA_SUPPORTED, VISA_NOT_NEEDED):
+            head = state.split("—")[0].split(",")[0].strip()
+            assert head in prompt, head
+
+    def test_dates_are_precomputed_not_left_to_model(self):
+        prompt = self._system()
+        assert "ДАТЫ УЖЕ ОТФИЛЬТРОВАНЫ" in prompt
+        assert "Свободных дат нет" in prompt
+        # Старое правило требовало от модели самой сравнивать даты и
+        # перечислять ВСЕ заезды — теперь это делает загрузчик.
+        assert "ФИЛЬТР ДАТ" not in prompt
+        assert "ВСЕ будущие даты" not in prompt
+
+    def test_male_gender_consistent(self):
+        """«Пол — мужской» противоречил примеру «я передала… она свяжется»."""
+        prompt = self._system()
+        assert "Пол — мужской" in prompt
+        assert "передала" not in prompt
+        assert "она свяжется" not in prompt
+
+    def test_paris_embassy_deadline_is_explicit_date(self):
+        """«на следующей неделе» устаревало каждую неделю."""
+        prompt = self._system()
+        assert "02.10.2026" in prompt
+        assert "на следующей неделе" not in prompt
+
+
 def test_escalation_limit_block_does_not_shift_prefix():
     """Переключение лимита эскалаций не должно двигать базу туров."""
     from src.ai.prompts import _build_system

@@ -70,6 +70,11 @@ class Settings(BaseSettings):
     # Проактивный мониторинг Instagram usage
     instagram_usage_warn_pct: int = 85
 
+    # Сколько ближайших дат заезда показывать по каждому туру. Раньше промпт
+    # требовал перечислять ВСЕ будущие даты — у «Французского поцелуя» их 11,
+    # ответ раздувался и рвался по max_tokens.
+    max_tour_dates: int = 3
+
     # Настройки сервера
     log_level: str = "INFO"
     host: str = "0.0.0.0"
