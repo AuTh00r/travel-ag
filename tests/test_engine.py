@@ -120,6 +120,75 @@ def test_build_full_prompt_distinguishes_ambiguous_query_from_attachment():
     assert "Только если ТЕКУЩЕЕ сообщение содержит служебную пометку" in system_prompt
 
 
+# --- DeepSeek prefix cache ---
+#
+# DeepSeek матчит кэш только по полному совпадению префикса с нулевого токена
+# (api-docs.deepseek.com/guides/kv_cache), поэтому всё меняющееся между
+# вызовами обязано быть в хвосте промпта. Раньше `Сейчас: ЧЧ:ММ` стоял в
+# первых строках и обнулял кэш каждую минуту — ~30 тыс. знаков входа шли по
+# цене cache miss вместо cache hit (в 50 раз дороже).
+
+
+def _common_prefix_len(a: str, b: str) -> int:
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n
+
+
+def test_system_prompt_prefix_stable_across_minutes():
+    """Смена минуты не должна менять ничего, кроме хвоста промпта."""
+    from src.ai.prompts import _build_system
+
+    tours = "=== ТУР: Турция ===\nПляж"
+    at_1015 = _build_system(tours, "", current_time="10:15")
+    at_1016 = _build_system(tours, "", current_time="10:16")
+
+    assert at_1015 != at_1016, "время обязано попадать в промпт"
+    shared = _common_prefix_len(at_1015, at_1016)
+    assert shared / len(at_1015) > 0.95, (
+        f"общий префикс всего {shared} из {len(at_1015)} знаков — "
+        "что-то переменное уехало в начало промпта и ломает кэш DeepSeek"
+    )
+
+
+def test_tours_base_precedes_variable_blocks():
+    """База туров — самая крупная статика, она обязана идти до FAQ и времени."""
+    from src.ai.prompts import _build_system
+
+    prompt = _build_system(
+        "=== ТУР: Турция ===\nПляж",
+        "Вопрос: нужна ли виза?",
+        current_time="10:15",
+    )
+    assert prompt.index("=== ТУР: Турция ===") < prompt.index("нужна ли виза?")
+    assert prompt.index("нужна ли виза?") < prompt.index("Сейчас: 10:15")
+
+
+def test_current_time_is_last_block():
+    from src.ai.prompts import _build_system
+
+    prompt = _build_system("", "", current_time="10:15")
+    assert prompt.rstrip().endswith(
+        "Это поле «Сейчас» из правила [ЧАСЫ] в разделе КОНЦОВКА."
+    )
+
+
+def test_escalation_limit_block_does_not_shift_prefix():
+    """Переключение лимита эскалаций не должно двигать базу туров."""
+    from src.ai.prompts import _build_system
+
+    tours = "=== ТУР: Турция ===\nПляж"
+    under = _build_system(tours, "", escalation_count=0, current_time="10:15")
+    over = _build_system(tours, "", escalation_count=3, current_time="10:15")
+
+    assert "ЛИМИТ ИСЧЕРПАН" in over and "ЛИМИТ ИСЧЕРПАН" not in under
+    shared = _common_prefix_len(under, over)
+    assert shared > under.index("=== ТУР: Турция ===") + len(tours)
+
+
 # --- Integration smoke test ---
 
 

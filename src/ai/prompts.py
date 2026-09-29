@@ -39,10 +39,22 @@ def _build_system(
 ) -> str:
     today = (current_date or date_type.today()).strftime("%d.%m.%Y")
     now = current_time or "неизвестно"
+
+    # Порядок блоков подчинён кэшу DeepSeek: он матчит только полное совпадение
+    # префикса с нулевого токена, поэтому всё неизменное (правила + база туров,
+    # ~30 тыс. знаков) идёт первым, а меняющееся между вызовами (приветствие,
+    # FAQ под конкретный вопрос, лимит эскалаций, текущее время) — в хвосте.
+    # Раньше `Сейчас: ЧЧ:ММ` стоял в первых строках и обнулял кэш каждую минуту.
     parts = [
-        _BASE_RULES.format(today=today, current_time=now),
+        _BASE_RULES.format(today=today),
         _SECURITY_RULES,
     ]
+
+    if tours_text:
+        parts.append(_TOURS_HEADER + tours_text)
+
+    parts.append(_ACTION_INSTRUCTIONS)
+    parts.append(_CLOSING_RULES)
 
     if should_greet:
         if is_first_message:
@@ -52,18 +64,15 @@ def _build_system(
     else:
         parts.append(_GREETING_SKIP)
 
-    if tours_text:
-        parts.append(_TOURS_HEADER + tours_text)
-
     if faq_context:
         parts.append(_FAQ_HEADER + faq_context)
 
-    parts.append(_ACTION_INSTRUCTIONS)
-    parts.append(_CLOSING_RULES)
     if escalation_count < 3:
         parts.append(_ESCALATION_RULES)
     else:
         parts.append(_ESCALATION_LIMIT_REACHED)
+
+    parts.append(_CURRENT_TIME.format(current_time=now))
 
     return "\n\n".join(parts)
 
@@ -72,7 +81,6 @@ _BASE_RULES = """Ты — ассистент менеджера туристич
 О себе говори в единственном числе от первого лица («я», «мне», «меня», «мой»). Пол — мужской.
 
 Сегодня: {today}
-Сейчас: {current_time} (по Минску)
 
 ПРАВИЛА ПОВЕДЕНИЯ:
 - Отвечай на языке клиента — русском или английском (по умолчанию, если непонятно, — русский), дружелюбно, уважительно и по делу, без воды. Если выходит длинно — не переживай, ответ будет разбит на несколько сообщений автоматически.
@@ -201,4 +209,13 @@ _ESCALATION_LIMIT_REACHED = """━━━━━━━━━━━━━━━━�
 Ты уже передавал этого клиента менеджеру 3 раза. Больше эскалаций не нужно.
 Если клиент снова просит менеджера — просто скажи: «Ваш запрос уже передан менеджерам, ожидайте, пожалуйста. Они свяжутся с вами в ближайшее время.»
 НЕ добавляй блок ===МЕНЕДЖЕР===."""
+
+
+# Текущее время идёт последним блоком системного промпта: оно меняется каждую
+# минуту, и в начале промпта обнуляло бы кэш DeepSeek на каждом вызове.
+_CURRENT_TIME = """━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ТЕКУЩЕЕ ВРЕМЯ
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Сейчас: {current_time} (по Минску). Это поле «Сейчас» из правила [ЧАСЫ] в разделе КОНЦОВКА."""
 
