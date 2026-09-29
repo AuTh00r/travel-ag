@@ -38,6 +38,11 @@ Thumbs.db
 bot*.log
 logs/
 tours/_analysis.json
+# Разовая работа с DOCX: профили LibreOffice, кэши OpenCL, дампы крэшей,
+# постраничные рендеры PDF. 499 файлов, из них 230 бинарных — раздували pack
+# до 250 МБ. Сами файлы остаются на диске (и в бэкапе на сервере), просто
+# больше не отслеживаются.
+.tmp_docx_qa/
 # Office lock files (Word/LibreOffice) — не коммитить
 .~lock.*#
 

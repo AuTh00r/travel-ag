@@ -19,8 +19,22 @@ $REMOTE_DIR = "C:\travel-agent-bot"
 $HEALTH_URL = "https://sundita.online/health"
 
 function _ssh {
+    <#
+        stderr сливаем в stdout по той же причине, что в _git: удалённые
+        команды (git pull, pytest) пишут туда безобидные сообщения — "From
+        https://github.com/...", прогресс — а при $ErrorActionPreference =
+        "Stop" PowerShell превращает любой stderr нативной команды в
+        NativeCommandError. Проверено 2026-09-29: деплой оборвался на шаге 3,
+        хотя git pull на сервере прошёл успешно. Судим строго по exit code.
+    #>
     param([string]$Cmd)
-    ssh $SSH_HOST $Cmd
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        ssh $SSH_HOST $Cmd 2>&1 | ForEach-Object { "$_" }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
     if ($LASTEXITCODE -ne 0) { throw "SSH command failed (exit: $LASTEXITCODE)" }
 }
 
