@@ -1,14 +1,15 @@
 import asyncio
+import hmac
 import re
 import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
-from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from structlog import get_logger
 
-from src.channels.instagram import InstagramChannel
+from src.channels.instagram import InstagramChannel, _MidSet
 from src.config import settings
 from src.db.pending_messages import (
     delete_pending,
@@ -46,7 +47,12 @@ _background_tasks: set[asyncio.Task] = set()
 # же webhook при network blip или рестарте приложения — без дедупа каждое
 # сообщение может быть обработано 2-3 раза. In-memory, сбрасывается при
 # рестарте (достаточно, т.к. Meta ретраит только первые несколько секунд).
-_processed_mids: set[str] = set()
+#
+# _MidSet, а не обычный set: set.pop() удаляет произвольный элемент по хешу,
+# а не самый старый (проверено — вылетали и mid_000, и mid_013 вперемешку).
+# При переполнении из защиты мог выпасть свежий mid, и переприсланный Meta
+# вебхук обрабатывался повторно — клиент получал ответ дважды.
+_processed_mids: _MidSet = _MidSet()
 _PROCESSED_MIDS_MAX = 10_000  # ограничение размера сета
 
 # Локи для сериализации обработки сообщений одного клиента.
@@ -195,9 +201,39 @@ async def data_deletion_instructions():
     return _DATA_DELETION_HTML
 
 
+def _require_admin_token(provided: str | None) -> None:
+    """Пустить дальше только с верным X-Admin-Token.
+
+    Роут доступен из интернета через Cloudflare Tunnel и пишет в сессию
+    (снимает паузу бота), поэтому знания client_id недостаточно: это обычный
+    Instagram sender_id, он светится в Telegram-уведомлениях и логах.
+
+    Пока токен не настроен — 404, а не «пускаем всех»: пустое поле в .env не
+    должно молча открывать доступ. 404 вместо 401 и здесь, и при неверном
+    токене — чтобы снаружи нельзя было отличить «роут есть, но токен не тот»
+    от «роута нет».
+    """
+    expected = settings.admin_api_token
+    if not expected:
+        logger.warning("admin.auth.token_not_configured")
+        raise HTTPException(status_code=404, detail="Not Found")
+    # Сравниваем байты, а не строки: compare_digest на str с не-ASCII символами
+    # бросает TypeError (проверено), и такой заголовок дал бы 500 вместо 404.
+    if not provided or not hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"),
+        expected.encode("utf-8", "surrogatepass"),
+    ):
+        logger.warning("admin.auth.rejected")
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
 @app.post("/api/admin/reset-takeover/{client_id}")
-async def reset_takeover(client_id: str):
+async def reset_takeover(
+    client_id: str,
+    x_admin_token: str | None = Header(default=None, alias="X-Admin-Token"),
+):
     """Сбросить паузу бота для клиента — бот снова отвечает."""
+    _require_admin_token(x_admin_token)
     try:
         session = await get_session(client_id)
         if session.get("manager_last_at") is None:
@@ -889,11 +925,10 @@ async def receive_instagram_message(request: Request):
             if duplicate_mid:
                 logger.info("instagram.webhook.dedup_skipped", mid=duplicate_mid)
                 continue
-            _processed_mids.update(mids)
-            if len(_processed_mids) > _PROCESSED_MIDS_MAX:
-                excess = len(_processed_mids) - _PROCESSED_MIDS_MAX
-                for _ in range(excess):
-                    _processed_mids.pop()
+            for message_id in mids:
+                _processed_mids.add(message_id)
+            while len(_processed_mids) > _PROCESSED_MIDS_MAX:
+                _processed_mids.pop_oldest()
         else:
             logger.warning("instagram.message.no_mid", kind=ev.get("kind"))
             continue

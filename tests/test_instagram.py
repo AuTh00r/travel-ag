@@ -151,6 +151,55 @@ class TestWebhookReceive:
         assert mock_process.await_count == 1  # не вырос
 
     @patch("src.main._process_safely")
+    def test_dedup_evicts_oldest_mid_not_random(self, mock_process):
+        """При переполнении из защиты обязан выпадать самый старый mid.
+
+        Обычный set.pop() удаляет произвольный элемент по хешу, а не старейший
+        (проверено: вылетали mid_000 и mid_013 вперемешку). Тогда из дедупа мог
+        выпасть свежий mid, и переприсланный Meta вебхук обрабатывался заново —
+        клиент получал ответ дважды.
+        """
+        import src.main as main_module
+
+        mock_process.return_value = None
+
+        def _payload(mid: str) -> dict:
+            return {
+                "entry": [
+                    {
+                        "messaging": [
+                            {
+                                "sender": {"id": "12345"},
+                                "message": {"text": "текст", "mid": mid},
+                            }
+                        ]
+                    }
+                ]
+            }
+
+        original_max = main_module._PROCESSED_MIDS_MAX
+        main_module._processed_mids.clear()
+        main_module._PROCESSED_MIDS_MAX = 3
+        try:
+            for i in range(5):
+                client.post("/webhook/instagram", json=_payload(f"mid_evict_{i}"))
+
+            assert len(main_module._processed_mids) == 3, "потолок не соблюдён"
+            # Старейшие вытеснены, свежие на месте.
+            assert "mid_evict_0" not in main_module._processed_mids
+            assert "mid_evict_1" not in main_module._processed_mids
+            for i in (2, 3, 4):
+                assert f"mid_evict_{i}" in main_module._processed_mids
+
+            # Свежий mid всё ещё защищён от повторной обработки.
+            before = mock_process.await_count
+            client.post("/webhook/instagram", json=_payload("mid_evict_4"))
+            assert mock_process.await_count == before
+        finally:
+            main_module._PROCESSED_MIDS_MAX = original_max
+            main_module._processed_mids.clear()
+
+    @patch("src.main._process_safely")
     def test_no_mid_skipped(self, mock_process):
         """Сообщение без mid пропускается (нет mid для дедупа)."""
         mock_process.return_value = None

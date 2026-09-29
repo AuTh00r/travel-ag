@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     max_message_length: int = 1000
     max_messages_per_minute: int = 5
 
+    # Токен для служебных /api/admin/* роутов. Они доступны из интернета через
+    # Cloudflare Tunnel, а reset-takeover снимает паузу бота — то есть пишет
+    # в сессию. Пока поле пустое, admin-роуты отдают 404: незаданный токен не
+    # должен означать «пускать всех».
+    admin_api_token: str = ""
+
     # Пауза бота при вмешательстве живого менеджера
     # Сколько бот молчит в чате после последней реплики менеджера. 10080 = 7 дней.
     manager_takeover_ttl_minutes: int = 10080

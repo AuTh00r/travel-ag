@@ -107,3 +107,61 @@ class TestRetryAndDelete:
         await enqueue_pending("CLIENT_1", "a", _iso(-5))
         await enqueue_pending("CLIENT_2", "b", _iso(-5))
         assert await count_pending() == 2
+
+
+class TestConnectionSettings:
+    """WAL и busy_timeout на обоих модулях БД.
+
+    Писателей минимум два независимых: обработка входящих сообщений и фоновый
+    воркер pending_messages (тикает каждые 30 сек). В режиме journal писатель
+    блокирует читателей, а без timeout конфликт даёт мгновенный
+    "database is locked" вместо ожидания.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sessions_uses_wal_and_timeout(self):
+        import src.db.sessions as sessions
+
+        await sessions.save_session("wal_probe", {"history": [], "escalation_count": 0})
+
+        conn = sessions._get_connection()
+        try:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10_000
+        finally:
+            conn.close()
+
+    @pytest.mark.asyncio
+    async def test_pending_uses_wal_and_timeout(self):
+        import src.db.pending_messages as pending_messages
+
+        await pending_messages.enqueue_pending("CLIENT_1", "привет", _iso(-5))
+
+        conn = pending_messages._get_connection()
+        try:
+            assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+            assert conn.execute("PRAGMA busy_timeout").fetchone()[0] == 10_000
+        finally:
+            conn.close()
+
+    @pytest.mark.asyncio
+    async def test_concurrent_writers_do_not_lock_out(self):
+        """Параллельная запись в оба модуля не должна падать с "database is locked"."""
+        import asyncio
+
+        import src.db.pending_messages as pending_messages
+        import src.db.sessions as sessions
+
+        async def write_sessions() -> None:
+            for i in range(20):
+                await sessions.save_session(
+                    f"client_{i}", {"history": [], "escalation_count": 0}
+                )
+
+        async def write_pending() -> None:
+            for i in range(20):
+                await pending_messages.enqueue_pending(f"r_{i}", "text", _iso(-5))
+
+        await asyncio.gather(write_sessions(), write_pending(), write_sessions())
+
+        assert await pending_messages.count_pending() == 20

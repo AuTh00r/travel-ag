@@ -10,8 +10,11 @@ logger = get_logger()
 
 def _get_connection() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    # timeout + WAL — по той же причине, что в sessions.py: фоновый воркер и
+    # обработка входящих пишут в один файл параллельно.
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS pending_messages (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -22,6 +25,14 @@ def _get_connection() -> sqlite3.Connection:
             attempts INTEGER NOT NULL DEFAULT 0
         )
         """)
+    # Индекс на retry_at здесь НЕ создаётся намеренно. Проверено на 5000 строк
+    # (EXPLAIN QUERY PLAN): из-за `ORDER BY id` в get_due_pending планировщик
+    # всё равно выбирает SCAN — идти по индексу retry_at, а потом сортировать по
+    # id дороже, чем просканировать таблицу в порядке rowid. Индекс стал бы
+    # мёртвым весом. Без ORDER BY он подхватывается (COVERING INDEX), так что
+    # если очередь начнёт реально накапливаться — менять надо запрос, а не
+    # добавлять индекс. Сейчас таблица почти всегда пуста: сообщения попадают в
+    # неё только при сбоях доставки.
     return conn
 
 

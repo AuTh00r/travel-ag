@@ -14,8 +14,16 @@ DB_PATH = Path("data/sessions.db")
 
 def _get_connection() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(DB_PATH))
+    # timeout: писателей минимум два независимых — обработка входящих сообщений
+    # и фоновый воркер pending_messages (тикает каждые 30 сек). Per-user локи в
+    # main.py защищают от гонки по одному клиенту, но не от пересечения воркера
+    # с обработкой разных клиентов. Без timeout конфликт даёт мгновенный
+    # "database is locked" вместо ожидания.
+    conn = sqlite3.connect(str(DB_PATH), timeout=10)
     conn.row_factory = sqlite3.Row
+    # WAL: в режиме journal (по умолчанию) писатель блокирует читателей. Свойство
+    # пишется в сам файл БД один раз и сохраняется, повторный вызов безвреден.
+    conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             client_id TEXT PRIMARY KEY,

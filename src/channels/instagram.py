@@ -627,7 +627,14 @@ class InstagramChannel(ChannelBase):
                     self._username_cache[sender_id] = username
                     if len(self._username_cache) > self._USERNAME_CACHE_MAX:
                         self._username_cache.pop(next(iter(self._username_cache)))
-                    logger.info(
+                    # debug, не info: username — персональные данные, а в
+                    # Privacy Policy заявлен их сбор, так что светить его в
+                    # логах (ротация 14 дней) без нужды не стоит. Для
+                    # диагностики хватает sender_id. Строка добавлялась как
+                    # доказательство вызова Business Asset User Profile Access
+                    # для скринкаста Meta App Review — при необходимости
+                    # поднимается через LOG_LEVEL=DEBUG.
+                    logger.debug(
                         "instagram.get_username.success",
                         sender_id=sender_id,
                         username=username,

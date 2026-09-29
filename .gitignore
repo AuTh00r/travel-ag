@@ -12,6 +12,10 @@ credentials.json
 
 # Data
 data/sessions.db
+# WAL-режим создаёт рядом с БД -wal и -shm: в них лежат те же данные клиентов,
+# что и в самой sessions.db, поэтому игнорируем вместе с ней.
+data/sessions.db-wal
+data/sessions.db-shm
 data/chroma/
 
 # IDE
