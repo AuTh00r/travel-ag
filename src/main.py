@@ -17,9 +17,11 @@ from src.db.pending_messages import (
     mark_pending_retry,
 )
 from src.db.sessions import (
+    effective_escalation_count,
     get_session,
     is_manager_active,
     save_session,
+    trim_history,
 )
 from src.exceptions import InstagramRateLimitError
 from src.logging_config import configure_logging
@@ -426,7 +428,11 @@ async def process_with_ai(sender_id: str, text: str) -> None:
 
         instagram_handle = await instagram.get_username(sender_id)
 
-        escalation_count = session.get("escalation_count", 0)
+        # Считаем ДО перезаписи last_message_at ниже — сброс опирается на время
+        # предыдущего сообщения клиента.
+        escalation_count = effective_escalation_count(
+            session, settings.escalation_reset_hours
+        )
         from src.config import MINSK_TZ
         now_minsk = datetime.now(MINSK_TZ)
         current_time = now_minsk.strftime("%H:%M")
@@ -436,7 +442,9 @@ async def process_with_ai(sender_id: str, text: str) -> None:
             session.get("last_message_at"), is_first,
         )
         messages = build_full_prompt(
-            tours_text, faq_context, history, text, escalation_count,
+            tours_text, faq_context,
+            trim_history(history, settings.max_history_messages),
+            text, escalation_count,
             current_date=current_date,
             current_time=current_time,
             should_greet=should_greet,
@@ -550,7 +558,9 @@ async def _process_non_text_safely(sender_id: str, text: str, metadata: dict) ->
         async with lock:
             session = await get_session(sender_id)
             instagram_handle = await instagram.get_username(sender_id)
-            escalation_count = session.get("escalation_count", 0)
+            escalation_count = effective_escalation_count(
+                session, settings.escalation_reset_hours
+            )
             summary = metadata.get("summary", "неизвестный тип")
 
             if escalation_count < 3:
@@ -688,7 +698,9 @@ async def _process_shared_post_safely(sender_id: str, received_at: float) -> Non
         async with lock:
             session = await get_session(sender_id)
             instagram_handle = await instagram.get_username(sender_id)
-            escalation_count = session.get("escalation_count", 0)
+            escalation_count = effective_escalation_count(
+                session, settings.escalation_reset_hours
+            )
 
             if escalation_count < 3:
                 try:

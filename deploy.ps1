@@ -24,6 +24,28 @@ function _ssh {
     if ($LASTEXITCODE -ne 0) { throw "SSH command failed (exit: $LASTEXITCODE)" }
 }
 
+function _git {
+    <#
+        git пишет в stderr не только ошибки, но и безобидные предупреждения
+        (например "LF will be replaced by CRLF"). При $ErrorActionPreference
+        = "Stop" PowerShell превращает любой stderr нативной команды в
+        NativeCommandError и роняет деплой на пустом месте — проверено
+        2026-09-29: `git add -A` убил шаг 1, хотя сам add прошёл.
+        Поэтому stderr сливаем в stdout и судим строго по exit code.
+    #>
+    param([Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArgs)
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & git @GitArgs 2>&1 | ForEach-Object { "$_" }
+    } finally {
+        $ErrorActionPreference = $previous
+    }
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $($GitArgs -join ' ') failed (exit: $LASTEXITCODE)"
+    }
+}
+
 Write-Host "=== Travel Bot Deploy ===" -ForegroundColor Cyan
 Write-Host ""
 
@@ -36,14 +58,13 @@ if (-not $SkipPush) {
         if (-not $CommitMessage) {
             $CommitMessage = "deploy: $((Get-Date -Format 'yyyy-MM-dd HH:mm'))"
         }
-        git add -A
-        git commit -m $CommitMessage
+        _git add -A
+        _git commit -m $CommitMessage
     } else {
         Write-Host "      No changes to commit." -ForegroundColor Gray
     }
 
-    git push origin master
-    if ($LASTEXITCODE -ne 0) { throw "git push failed" }
+    _git push origin master
     Write-Host "      Done" -ForegroundColor Green
 } else {
     Write-Host "[1/5] Push skipped (--SkipPush)" - ForegroundColor Gray
