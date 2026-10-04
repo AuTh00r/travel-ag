@@ -925,7 +925,7 @@ def _initial_tour_sync() -> None:
     if (
         not settings.tour_sync_enabled
         or not settings.tour_sync_folder_id
-        or not settings.google_drive_api_key
+        or not (settings.google_drive_credentials_file or settings.google_drive_api_key)
     ):
         logger.info("tour_sync.disabled")
         return
@@ -934,9 +934,13 @@ def _initial_tour_sync() -> None:
     snapshot, info = ts.sync_now(
         httpx.get,
         settings.tour_sync_folder_id,
-        settings.google_drive_api_key,
+        {
+            "credentials_file": settings.google_drive_credentials_file,
+            "api_key": settings.google_drive_api_key,
+        },
         prev,
         get_tours_text(),
+        ts.parse_aliases(settings.tour_sync_name_aliases),
         settings.tour_sync_min_tours,
         settings.tour_sync_max_drop_ratio,
     )
@@ -981,9 +985,13 @@ async def _tour_sync_worker():
                 ts.sync_now,
                 httpx.get,
                 settings.tour_sync_folder_id,
-                settings.google_drive_api_key,
+                {
+                    "credentials_file": settings.google_drive_credentials_file,
+                    "api_key": settings.google_drive_api_key,
+                },
                 snapshot,
                 get_tours_text(),
+                ts.parse_aliases(settings.tour_sync_name_aliases),
                 settings.tour_sync_min_tours,
                 settings.tour_sync_max_drop_ratio,
             )

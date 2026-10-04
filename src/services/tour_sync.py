@@ -23,6 +23,7 @@
 """
 
 import hashlib
+import re
 from datetime import date as date_type
 from datetime import datetime, timezone
 
@@ -35,7 +36,10 @@ logger = get_logger()
 
 DRIVE_FILES_URL = "https://www.googleapis.com/drive/v3/files"
 GOOGLE_DOC_MIME = "application/vnd.google-apps.document"
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+SYNCABLE_MIMES = (GOOGLE_DOC_MIME, DOCX_MIME)
 HTTP_TIMEOUT = 30
+DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
 
 # Маркеры, после которых в документе идёт служебный хвост (дисклеймер,
 # реквизиты, телефоны). В базе их нет (проверено: ЧУП/телефонов в базе нет),
@@ -43,43 +47,155 @@ HTTP_TIMEOUT = 30
 _FOOTER_MARKERS = ("Туристическая компания", "ЧУП")
 
 
+def api_key_auth(api_key: str):
+    """apply_auth для API-ключа: ключ — параметром запроса."""
+
+    def apply(params: dict, headers: dict) -> None:
+        params["key"] = api_key
+
+    return apply
+
+
+class ServiceAccountAuth:
+    """apply_auth для сервисного аккаунта: Bearer-токен в заголовке.
+
+    Токен кэшируется внутри объекта и обновляется по истечении — один объект
+    на воркер, не пересоздавать на каждый тик. Приватный ключ из файла никуда
+    не пишется и не логируется.
+    """
+
+    def __init__(self, credentials_path: str):
+        from google.oauth2 import service_account
+
+        self._creds = service_account.Credentials.from_service_account_file(
+            credentials_path, scopes=[DRIVE_READONLY_SCOPE]
+        )
+
+    def apply(self, params: dict, headers: dict) -> None:
+        from google.auth.transport.requests import Request
+
+        if not self._creds.valid:
+            self._creds.refresh(Request())
+        headers["Authorization"] = f"Bearer {self._creds.token}"
+
+
+def make_auth_provider(credentials_file: str = "", api_key: str = ""):
+    """Выбрать способ авторизации. Файл сервисного аккаунта в приоритете.
+
+    Возвращает apply_auth(params, headers) или None, если настраивать нечего.
+    """
+    if credentials_file:
+        return ServiceAccountAuth(credentials_file).apply
+    if api_key:
+        return api_key_auth(api_key)
+    return None
+
+
 def _redact(params: dict) -> dict:
     """Копия параметров без секретов — для логов."""
     return {k: ("<redacted>" if "key" in k.lower() else v) for k, v in params.items()}
 
 
-def list_drive_docs(http_get, folder_id: str, api_key: str) -> list[dict]:
-    """Перечислить Google Docs в папке. Возвращает [{id, name, modifiedTime}].
+def _call(http_get, url: str, params: dict, apply_auth) -> object:
+    """Один GET с подставленной авторизацией. Токен/ключ в логи не пишем."""
+    headers: dict = {}
+    apply_auth(params, headers)
+    return http_get(url, params=params, timeout=HTTP_TIMEOUT, headers=headers)
 
-    `http_get` — вызываемый `(url, params, timeout)`, инжектится для тестов.
+
+def list_drive_docs(http_get, folder_id: str, apply_auth) -> list[dict]:
+    """Перечислить файлы папки. Возвращает [{id, name, mime, modified}].
+
+    Берём нативные Google Docs и загруженные .docx — оба типа умеем разбирать.
+    `http_get` — вызываемый `(url, params, timeout, headers)`, инжектится.
     Бросает `httpx.HTTPError` наружу — ловит вызывающий воркер.
     """
     params = {
         "q": f"'{folder_id}' in parents and trashed = false",
         "fields": "files(id,name,mimeType,modifiedTime)",
         "pageSize": 100,
-        "key": api_key,
     }
-    resp = http_get(DRIVE_FILES_URL, params=params, timeout=HTTP_TIMEOUT)
+    resp = _call(http_get, DRIVE_FILES_URL, params, apply_auth)
     resp.raise_for_status()
     files = resp.json().get("files", [])
     docs = [
-        {"id": f["id"], "name": f["name"], "modified": f.get("modifiedTime", "")}
+        {
+            "id": f["id"],
+            "name": f["name"],
+            "mime": f.get("mimeType", ""),
+            "modified": f.get("modifiedTime", ""),
+        }
         for f in files
-        if f.get("mimeType") == GOOGLE_DOC_MIME and f.get("id") and f.get("name")
+        if f.get("mimeType") in SYNCABLE_MIMES and f.get("id") and f.get("name")
     ]
     logger.debug("tour_sync.listed", count=len(docs), params=_redact(params))
     return docs
 
 
-def export_doc_text(http_get, doc_id: str, api_key: str) -> str:
-    """Скачать документ plain-text экспортом (сырой текст, без обработки)."""
-    params = {"mimeType": "text/plain", "key": api_key}
-    resp = http_get(
-        f"{DRIVE_FILES_URL}/{doc_id}/export", params=params, timeout=HTTP_TIMEOUT
-    )
+def export_doc_text(http_get, doc: dict, apply_auth) -> str:
+    """Скачать содержимое файла raw-текстом (без обработки).
+
+    Нативный Google Doc — через export в plain text; загруженный .docx —
+    через download (`alt=media`) с разбором абзацев той же библиотекой,
+    что читает локальные файлы.
+    """
+    if doc["mime"] == GOOGLE_DOC_MIME:
+        params = {"mimeType": "text/plain"}
+        resp = _call(http_get, f"{DRIVE_FILES_URL}/{doc['id']}/export", params, apply_auth)
+        resp.raise_for_status()
+        return resp.text
+    params = {"alt": "media"}
+    resp = _call(http_get, f"{DRIVE_FILES_URL}/{doc['id']}", params, apply_auth)
     resp.raise_for_status()
-    return resp.text
+    from io import BytesIO
+
+    from docx import Document
+
+    document = Document(BytesIO(resp.content))
+    return "\n".join(p.text for p in document.paragraphs)
+
+
+def normalize_tour_name(name: str) -> str:
+    """Каноническое имя для сопоставления: регистр/расширение/пробелы/тире."""
+    n = name.lower()
+    n = re.sub(r"\.[a-z0-9]+$", "", n)
+    n = n.replace("—", "-").replace("–", "-").replace("_", " ")
+    n = re.sub(r"\s+", " ", n)
+    n = re.sub(r"\s*-\s*", "-", n)
+    return n.strip()
+
+
+def parse_aliases(raw: str) -> dict[str, str]:
+    """'A=B;C=D' -> {canon(A): canon(B)}. Связка имён из папки с базой."""
+    aliases: dict[str, str] = {}
+    for part in (raw or "").split(";"):
+        if "=" not in part:
+            continue
+        left, right = part.split("=", 1)
+        if left.strip() and right.strip():
+            aliases[normalize_tour_name(left)] = normalize_tour_name(right)
+    return aliases
+
+
+def clean_display_name(name: str) -> str:
+    """Имя для заголовка секции: без расширения, без двойных пробелов.
+
+    В папке встречаются «Французский  поцелуй.docx» — такой мусор иначе
+    уехал бы в заголовок «=== ТУР: ... ===» и дальше в ответы модели.
+    Регистр и смысл не трогаем.
+    """
+    cleaned = re.sub(r"\.[a-zA-Z0-9]+$", "", name.strip())
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
+def parse_tour_headers(base_text: str) -> list[str]:
+    """Названия туров из готовой базы (для сверки первого запуска)."""
+    names: list[str] = []
+    for line in base_text.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith("=== ТУР:"):
+            names.append(stripped[len("=== ТУР:"):].rstrip("=").strip())
+    return names
 
 
 def normalize_lines(text: str) -> list[str]:
@@ -275,26 +391,45 @@ def format_diff_message(diff: dict, skipped: list[str]) -> str:
     return "\n".join(lines)
 
 
+def _resolve_auth(auth):
+    """apply_auth из конфига ({credentials_file, api_key}) или готовый callable."""
+    if auth is None:
+        return None
+    if callable(auth):
+        return auth
+    return make_auth_provider(auth.get("credentials_file", ""), auth.get("api_key", ""))
+
+
 def sync_now(
     http_get,
     folder_id: str,
-    api_key: str,
+    auth,
     prev: dict | None,
     carried_seed_text: str = "",
+    aliases: dict | None = None,
     min_tours: int = 1,
     max_drop_ratio: float = 0.5,
     today: date_type | None = None,
 ) -> tuple[dict | None, dict]:
     """Один проход синхронизации. Исключений наружу не выпускает.
 
-    Возвращает (snapshot|None, info). info.status: ok | unchanged | invalid
-    | error | auth_error | disabled. При ok в info лежат diff и skipped.
+    `auth` — готовый apply_auth-каллбл (удобно в тестах) или словарь
+    {credentials_file, api_key}. Возвращает (snapshot|None, info).
+    info.status: ok | unchanged | invalid | error | auth_error | disabled.
+    При ok в info лежат diff и skipped.
     """
-    if not folder_id or not api_key:
+    if not folder_id:
+        return None, {"status": "disabled"}
+    try:
+        apply_auth = _resolve_auth(auth)
+    except OSError as exc:
+        logger.error("tour_sync.auth_init_failed", error=str(exc)[:120])
+        return None, {"status": "auth_error", "reason": "учётные данные Drive недоступны"}
+    if apply_auth is None:
         return None, {"status": "disabled"}
 
     try:
-        docs = list_drive_docs(http_get, folder_id, api_key)
+        docs = list_drive_docs(http_get, folder_id, apply_auth)
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code if exc.response is not None else 0
         if 400 <= code < 500:
@@ -310,42 +445,52 @@ def sync_now(
     raws: dict[str, dict] = {}
     skipped_dl: list[str] = []
     for doc in docs:
+        display = clean_display_name(doc["name"])
         old = prev_tours.get(doc["id"])
         if old and old.get("modified") == doc["modified"] and old.get("raw"):
             raws[doc["id"]] = {
-                "name": doc["name"],
+                "name": display,
                 "modified": doc["modified"],
                 "text": old["raw"],
             }
             continue
         try:
-            text = export_doc_text(http_get, doc["id"], api_key)
+            text = export_doc_text(http_get, doc, apply_auth)
         except httpx.HTTPError as exc:
             logger.warning(
                 "tour_sync.export_failed", name=doc["name"], error=exc.__class__.__name__
             )
             if old and old.get("raw"):
                 raws[doc["id"]] = {
-                    "name": doc["name"],
+                    "name": display,
                     "modified": old.get("modified", ""),
                     "text": old["raw"],
                 }
             else:
-                skipped_dl.append(f"{doc['name']} (не скачался)")
+                skipped_dl.append(f"{display} (не скачался)")
             continue
         raws[doc["id"]] = {
-            "name": doc["name"],
+            "name": display,
             "modified": doc["modified"],
             "text": text,
         }
 
     carried = {doc_id: t["booking_url"] for doc_id, t in prev_tours.items() if t.get("booking_url")}
     seed = seed_bookings_from_text(carried_seed_text) if carried_seed_text else {}
-    # Подхват по названию — только для документов, которых не было в прошлом
-    # состоянии (bootstrap при первом запуске).
+    seed_norm = {normalize_tour_name(k): v for k, v in seed.items()}
+    aliases = aliases or {}
+    # Подхват брони по названию — только для документов, которых не было
+    # в прошлом состоянии (bootstrap при первом запуске). Имена сравниваем
+    # в канонической форме: регистр, расширение, пробелы и тире у начальства
+    # гуляют («Французский  поцелуй.docx»), а явные расхождения
+    # («Эльбрус 2027» vs «Горнолыжный отдых на Эльбрусе») закрываем алиасами.
     for doc_id, doc in raws.items():
-        if doc_id not in carried and doc["name"] in seed:
-            carried[doc_id] = seed[doc["name"]]
+        if doc_id in carried:
+            continue
+        key = normalize_tour_name(doc["name"])
+        target = aliases.get(key, key)
+        if target in seed_norm:
+            carried[doc_id] = seed_norm[target]
 
     try:
         snapshot, skipped = build_snapshot(raws, carried, today=today)
@@ -354,7 +499,25 @@ def sync_now(
         return None, {"status": "invalid", "reason": str(exc)}
     skipped = skipped + skipped_dl
 
-    prev_count = len(prev_tours) if prev else None
+    # Первый запуск (снапшота ещё нет): сравниваем с текущей базой из seed —
+    # иначе исчезновение туров, которых нет в папке, прошло бы молча.
+    # Сопоставление алиас-чувствительное: «Эльбрус 2027» из папки — это
+    # «Горнолыжный отдых на Эльбрусе» из базы, а не удаление + добавление.
+    base_names: list[str] = []
+    if prev is None and carried_seed_text:
+        base_names = parse_tour_headers(carried_seed_text)
+    if base_names:
+        new_mapped = {
+            aliases.get(normalize_tour_name(t["name"]), normalize_tour_name(t["name"]))
+            for t in snapshot["tours"]
+        }
+        missing = [
+            n for n in base_names if normalize_tour_name(n) not in new_mapped
+        ]
+    else:
+        missing = []
+
+    prev_count = len(prev_tours) if prev else (len(base_names) or None)
     ok, reason = validate_snapshot(len(snapshot["tours"]), prev_count, min_tours, max_drop_ratio)
     if not ok:
         logger.warning("tour_sync.validation_failed", reason=reason)
@@ -364,6 +527,9 @@ def sync_now(
         return prev, {"status": "unchanged"}
 
     diff = diff_snapshots(prev, snapshot)
+    for gone in missing:
+        if gone not in diff["removed"]:
+            diff["removed"].append(f"{gone} (нет в папке)")
     logger.info(
         "tour_sync.built",
         tours=len(snapshot["tours"]),

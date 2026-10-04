@@ -9,6 +9,8 @@ build/
 .env
 .venv/
 credentials.json
+# Ключи сервисных аккаунтов Google (синхронизация туров) — только на сервере.
+credentials/
 
 # Data
 data/sessions.db
