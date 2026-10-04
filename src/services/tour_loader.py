@@ -300,3 +300,42 @@ def load_tours(folder_path: str | None = None) -> str:
 
 def get_tours_text() -> str:
     return _tours_text
+
+
+def publish_tours_text(text: str) -> None:
+    """Атомарно подменить кэш базы туров (точка перезагрузки для tour_sync).
+
+    Простое присваивание глобала: читатели (`get_tours_text`) видят либо
+    старую, либо новую версию целиком, половинчатого состояния нет.
+    """
+    global _tours_text
+    _tours_text = text
+    logger.info("tours.published", chars=len(text))
+
+
+def save_snapshot(path: str, snapshot: dict) -> None:
+    """Сохранить last-good снапшот (атомарно: tmp + rename)."""
+    import json
+    import os as _os
+
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(snapshot, f, ensure_ascii=False)
+    _os.replace(tmp_path, path)
+
+
+def load_snapshot(path: str) -> dict | None:
+    """Прочитать last-good снапшот. Нет файла/битый JSON — None, не исключение."""
+    import json
+
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not data.get("text"):
+        return None
+    return data

@@ -75,6 +75,27 @@ class Settings(BaseSettings):
     # ответ раздувался и рвался по max_tokens.
     max_tour_dates: int = 3
 
+    # Синхронизация туров из Google Drive (см. .kiro/specs/tour-sync/).
+    # Главный рубильник; пока выключено или не заданы folder_id/ключ —
+    # воркер спит, бот работает по локальным tours/*.docx как раньше.
+    tour_sync_enabled: bool = True
+    tour_sync_folder_id: str = ""
+    google_drive_api_key: str = ""
+    # Интервал опроса папки. Опрос дешёвый; публикация в память — только
+    # при изменении хэша, чтобы не инвалидировать кэш DeepSeek каждые N минут.
+    tour_sync_interval_seconds: int = 300
+    # Валидация перед публикацией: пустой результат не публикуется никогда;
+    # ниже порога или просадка больше доли относительно текущей базы —
+    # не публикуем, шлём алерт, остаётся last-good.
+    tour_sync_min_tours: int = 1
+    tour_sync_max_drop_ratio: float = 0.5
+    # Персистентный last-good: переживает рестарт, когда Google недоступен.
+    tour_sync_snapshot_path: str = "data/tours_snapshot.json"
+    # Уведомления в Telegram: изменения цен/дат/ссылок/состава + ошибки.
+    tour_sync_notify: bool = True
+    # После скольких подряд провалов слать алерт (4xx — сразу, без счёта).
+    tour_sync_alert_after_failures: int = 3
+
     # Настройки сервера
     log_level: str = "INFO"
     host: str = "0.0.0.0"

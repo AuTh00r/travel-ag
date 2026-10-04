@@ -1,0 +1,85 @@
+# Design: синхронизация туров из Google Drive
+
+## Overview
+
+In-process воркер в `lifespan` опрашивает Drive API, собирает базу через существующий разбор `tour_loader`, публикует в память только при изменении и пройденной валидации. Читатели (`process_with_ai` → `get_tours_text()`) не меняются.
+
+## Architecture
+
+```
+[Drive folder] --files.list--> [tour_sync.tick]
+      |                              |
+      +--export изменившихся-------->+
+                                     v
+                        [build: разбор как load_tours]
+                                     v
+                        [validate: пусто/мин/просадка/бронь]
+                                     v
+                   +-- ok + hash изменился: publish (память + снапшот + лог + TG)
+                   +-- иначе: пропуск (last-good живёт)
+```
+
+Идентичность тура между тиками — по ID документа Drive (названия могут меняться). Ссылка на бронирование переносится из прошлого состояния по ID; у новых документов без брони — пропуск + уведомление.
+
+## Components and Interfaces
+
+### `src/services/tour_sync.py` (новый)
+
+- `list_drive_docs(http, folder_id, api_key) -> list[DriveDoc]` — `id, name, mimeType, modifiedTime`; только Google Docs. Ключ передаётся параметром запроса, в логи не пишется.
+- `export_doc(http, doc_id, api_key) -> str` — `export?mimeType=text/plain`; срез BOM, нормализация пробелов.
+- `build_snapshot(docs: list[DocText], carried: dict[doc_id, booking_url]) -> Snapshot` — каждый документ как один блок в `_extract_tour_section` (имя из прошлого состояния или из документа); добавление строки со ссылкой на тур (`https://docs.google.com/document/d/{id}`); документы без брони исключаются со списком `skipped`.
+  - `Snapshot = {tours: [{doc_id, name, booking_url}], text, hash, built_at}`.
+- `validate_snapshot(snap, prev_count, min_tours) -> (ok, reason)` — правила FR-4.
+- `diff_snapshots(old, new) -> Diff` — добавлены/удалены/изменены (цена/даты/ссылки — эвристика по тексту секции: строки `Сколько стоит:`, `Когда (`, `Ссылка на`).
+- `tick(state) -> TickResult` — один проход: list → скачать изменившееся → build → validate → diff → publish/skip. Все исключения наружу не выпускает (возвращает `ok/error`, воркер логирует).
+
+### `src/services/tour_loader.py` (минимальные правки)
+
+- `publish_tours_text(text) -> None` — атомарная подмена глобала (простое присваивание; читатели видят старую или новую версию целиком).
+- `save_snapshot(path, snapshot) / load_snapshot(path) -> Snapshot | None` — JSON, запись через tmp+rename.
+- Существующий `load_tours()` не трогаем (остаётся fallback-путём и для локального прогона).
+
+### `src/main.py` (`lifespan`, рядом с `_pending_messages_worker`)
+
+- Стартовый поток `_initial_tours()`: sync (если настроен) → снапшот → `load_tours()`. Первое успешное — побеждает.
+- Воркер `_tour_sync_worker()`: `while True: sleep(interval); tick()`; исключения внутри `tick` не роняют цикл.
+
+### `src/config.py` + `.env.example`
+
+`tour_sync_enabled=True`, `tour_sync_folder_id=""`, `google_drive_api_key=""`, `tour_sync_interval_seconds=300`, `tour_sync_min_tours=1`, `tour_sync_max_drop_ratio=0.5`, `tour_sync_snapshot_path="data/tours_snapshot.json"`, `tour_sync_notify=True`. В `.env.example` — только имена.
+
+### Уведомления
+
+Через существующий `TelegramNotifier.notify_manager(sender_id="tour_sync", context=..., tag="Tour sync")`. Текст: что изменилось (туры ±, цены/даты/ссылки), что пропущено и почему. Ошибки 4xx — сразу; транспортные — после 3 подряд провалов.
+
+## Data Models
+
+- `DriveDoc`: `id, name, mimeType, modifiedTime` (из API).
+- `Snapshot`: `{tours: [{doc_id, name, booking_url}], text, hash(sha256 текста), built_at}`. Хранится в памяти воркера и в JSON-снапшоте.
+- Снапшот в `.gitignore` (`data/tours_snapshot.json`) — там тексты туров; принцип как с `sessions.db`.
+
+## Decisions
+
+- **D1. Перечисление через Drive API, а не скрапинг/браузер.** Проверено: статическое перечисление папки невозможно, браузерный движок в этой среде не поднялся. API-ключ бесплатен, для публичной папки OAuth не нужен.
+- **D2. In-process воркер вместо внешнего скрипта.** Меньше движущихся частей и ops-нагрузки; решение владельца.
+- **D3. Ключ по ID документа, бронь наследуется.** В Google-документах ссылок на бронирование нет (проверено на трёх документах) — единственный стабильный источник брони для новой версии.
+- **D4. Публикация только по хэшу.** Защита кэша DeepSeek: опрос каждые 5 минут не должен переписывать идентичный текст.
+- **D5. Порог просадки 50% + минимум туров.** Один сбой сети/очистка папки не должны опустошать базу.
+
+## Error Handling
+
+| Случай | Реакция |
+|---|---|
+| Таймаут/5xx/сеть | Пропуск тика; алерт после 3 подряд |
+| 4xx Drive | Алерт сразу |
+| Пустой результат / ниже порога / просадка >50% | Не публикуем, алерт |
+| Документ без брони | Пропускаем документ, публикуем остальное, указываем в уведомлении |
+| Упал отдельный экспорт | Пропускаем документ (берём его прошлую секцию из last-good), остальные публикуем |
+| Исключение в воркере | Лог, цикл продолжается |
+
+## Testing Strategy
+
+- Юниты на поддельных ответах Drive (без сети): сборка, хэш, валидация всех веток, diff, пропуск без брони, наследование брони, снапшот roundtrip (tmp).
+- Мутационная самопроверка ключевых веток перед деплоем.
+- Живой прогон вручную: список папки, изменение документа → появление в базе, Telegram-уведомление; контрольные вопросы боту.
+- Полный `pytest` локально и на сервере в составе `deploy.ps1`.

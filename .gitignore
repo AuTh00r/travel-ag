@@ -12,6 +12,9 @@ credentials.json
 
 # Data
 data/sessions.db
+# Снапшот синхронизации туров (last-good): тексты туров в репозиторий не кладём,
+# файл переживает рестарт на диске сервера.
+data/tours_snapshot.json
 # WAL-режим создаёт рядом с БД -wal и -shm: в них лежат те же данные клиентов,
 # что и в самой sessions.db, поэтому игнорируем вместе с ней.
 data/sessions.db-wal

@@ -5,6 +5,7 @@ import threading
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
+import httpx
 from fastapi import FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import HTMLResponse
 from structlog import get_logger
@@ -73,6 +74,11 @@ _SHARED_POST_CLARIFICATION = (
     "название тура, направление, даты или стоимость?"
 )
 
+# Флаг: первичная загрузка базы туров (DOCX + первая попытка sync) завершена.
+# Воркер синхронизации ждёт его перед первым тиком, чтобы не гоняться
+# с `_load_tours` за память и снапшот-файл.
+_tours_initial_loaded = threading.Event()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -94,6 +100,14 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("tours.load_failed")
             app.state.tours_text = ""
+        finally:
+            _tours_initial_loaded.set()
+        # Поверх локальной базы — свежая версия из Drive, если настроено.
+        # В отдельном потоке и так, сеть старту бота не тормозит.
+        try:
+            _initial_tour_sync()
+        except Exception:
+            logger.exception("tour_sync.initial_failed")
 
     threading.Thread(target=_load_faq, daemon=True).start()
     threading.Thread(target=_load_tours, daemon=True).start()
@@ -102,6 +116,11 @@ async def lifespan(app: FastAPI):
     worker_task = asyncio.create_task(_pending_messages_worker())
     _background_tasks.add(worker_task)
     worker_task.add_done_callback(_background_tasks.discard)
+
+    # Фоновый воркер синхронизации туров из Google Drive
+    sync_task = asyncio.create_task(_tour_sync_worker())
+    _background_tasks.add(sync_task)
+    sync_task.add_done_callback(_background_tasks.discard)
 
     yield
 
@@ -855,6 +874,172 @@ async def _reschedule_or_giveup(row: dict, retry_after_seconds: float | None) ->
             logger.exception("instagram.message.giveup.notify_failed")
     else:
         await mark_pending_retry(row["id"], new_retry_at)
+
+
+async def _notify_tour_sync(text: str) -> None:
+    """Уведомление о синхронизации туров менеджерам (если включено)."""
+    if not settings.tour_sync_notify:
+        return
+    try:
+        from src.services.telegram_notify import TelegramNotifier
+
+        await TelegramNotifier().notify_manager(
+            sender_id="tour_sync", context=text, tag="Tour sync"
+        )
+    except Exception:
+        logger.exception("tour_sync.notify_failed")
+
+
+async def _apply_tour_sync_result(snapshot: dict, info: dict) -> None:
+    """Опубликовать результат тика: память + снапшот + лог + Telegram."""
+    from src.services import tour_sync as ts
+    from src.services.tour_loader import publish_tours_text, save_snapshot
+
+    publish_tours_text(snapshot["text"])
+    try:
+        save_snapshot(settings.tour_sync_snapshot_path, snapshot)
+    except Exception:
+        logger.exception("tour_sync.snapshot_save_failed")
+    app.state.tours_text = snapshot["text"]
+
+    diff, skipped = info.get("diff", {}), info.get("skipped", [])
+    if diff.get("added") or diff.get("removed") or diff.get("changed") or skipped:
+        await _notify_tour_sync(ts.format_diff_message(diff, skipped))
+
+
+def _initial_tour_sync() -> None:
+    """Первая попытка sync при старте: Drive → снапшот → остаётся DOCX.
+
+    Вызывается из потока `_load_tours` после локальной загрузки, так что
+    seed для подхвата ссылок на бронирование уже в памяти. Без сети и без
+    снапшота просто остаётся загруженное из DOCX.
+    """
+    from src.services import tour_sync as ts
+    from src.services.tour_loader import (
+        get_tours_text,
+        load_snapshot,
+        publish_tours_text,
+        save_snapshot,
+    )
+
+    if (
+        not settings.tour_sync_enabled
+        or not settings.tour_sync_folder_id
+        or not settings.google_drive_api_key
+    ):
+        logger.info("tour_sync.disabled")
+        return
+
+    prev = load_snapshot(settings.tour_sync_snapshot_path)
+    snapshot, info = ts.sync_now(
+        httpx.get,
+        settings.tour_sync_folder_id,
+        settings.google_drive_api_key,
+        prev,
+        get_tours_text(),
+        settings.tour_sync_min_tours,
+        settings.tour_sync_max_drop_ratio,
+    )
+    if snapshot is None:
+        logger.warning("tour_sync.initial_skipped", reason=info.get("reason", info.get("status")))
+        return
+    publish_tours_text(snapshot["text"])
+    try:
+        save_snapshot(settings.tour_sync_snapshot_path, snapshot)
+    except Exception:
+        logger.exception("tour_sync.snapshot_save_failed")
+    app.state.tours_text = snapshot["text"]
+    if info.get("status") == "ok":
+        diff, skipped = info.get("diff", {}), info.get("skipped", [])
+        if diff.get("added") or diff.get("removed") or diff.get("changed") or skipped:
+            asyncio.run(_notify_tour_sync(ts.format_diff_message(diff, skipped)))
+
+
+async def _tour_sync_worker():
+    """Фоновый воркер синхронизации туров из Google Drive.
+
+    Запускается в lifespan как asyncio.create_task. Раз в
+    tour_sync_interval_seconds опрашивает папку; публикует в память только
+    изменившуюся и провалидированную сборку. Любая ошибка — лог, цикл живёт.
+    """
+    from src.services import tour_sync as ts
+    from src.services.tour_loader import get_tours_text, load_snapshot
+
+    # Ждём первичную загрузку, иначе гонка с `_load_tours` за память/снапшот.
+    await asyncio.to_thread(_tours_initial_loaded.wait, 180)
+
+    snapshot = load_snapshot(settings.tour_sync_snapshot_path)
+    fail_streak = 0
+    last_alert: str | None = None
+    disabled_logged = False
+
+    while True:
+        await asyncio.sleep(settings.tour_sync_interval_seconds)
+        try:
+            # Сетевые вызовы — в потоке, чтобы не стопать event loop.
+            snapshot, info = await asyncio.to_thread(
+                ts.sync_now,
+                httpx.get,
+                settings.tour_sync_folder_id,
+                settings.google_drive_api_key,
+                snapshot,
+                get_tours_text(),
+                settings.tour_sync_min_tours,
+                settings.tour_sync_max_drop_ratio,
+            )
+        except Exception:
+            logger.exception("tour_sync.tick_failed")
+            continue
+
+        status = info.get("status")
+        if status == "disabled":
+            if not disabled_logged:
+                logger.info("tour_sync.disabled")
+                disabled_logged = True
+            continue
+        disabled_logged = False
+
+        if status == "unchanged":
+            fail_streak = 0
+            last_alert = None
+            continue
+
+        if status == "ok":
+            fail_streak = 0
+            last_alert = None
+            try:
+                await _apply_tour_sync_result(snapshot, info)
+            except Exception:
+                logger.exception("tour_sync.apply_failed")
+            continue
+
+        if status == "auth_error":
+            key = "auth:" + str(info.get("reason", ""))
+            if key != last_alert:
+                last_alert = key
+                await _notify_tour_sync(
+                    "❌ Синхронизация туров: " + str(info.get("reason", "ошибка доступа"))
+                    + ". Проверьте ключ и доступ к папке. Бот отвечает по последней версии."
+                )
+            continue
+
+        if status == "invalid":
+            key = "invalid:" + str(info.get("reason", ""))
+            if key != last_alert:
+                last_alert = key
+                await _notify_tour_sync(
+                    "⚠️ Синхронизация туров отклонена: " + str(info.get("reason", ""))
+                    + ". Осталась последняя рабочая версия."
+                )
+            continue
+
+        # status == "error": транспортный сбой, алерт после N подряд.
+        fail_streak += 1
+        if fail_streak == settings.tour_sync_alert_after_failures:
+            await _notify_tour_sync(
+                f"⚠️ Синхронизация туров недоступна ({fail_streak} подряд): "
+                f"{info.get('reason', '')}. Работаем по последней версии."
+            )
 
 
 async def _pending_messages_worker():
