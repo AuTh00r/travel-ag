@@ -388,14 +388,19 @@ class TestTourNames:
         assert ts.normalize_tour_name("Варшава-Берлин-Познань") == "варшава-берлин-познань"
 
     def test_parse_aliases(self):
-        aliases = ts.parse_aliases("Эльбрус 2027=Горнолыжный отдых на Эльбрусе;Варшава-Дрезден-Прага=ВДП")
+        aliases = ts.parse_aliases(
+            "Эльбрус 2027=https://sundita.by/tur/elbrus/;ВДП=https://sundita.by/tur/vdp/"
+        )
         assert aliases == {
-            "эльбрус 2027": "горнолыжный отдых на эльбрусе",
-            "варшава-дрезден-прага": "вдп",
+            "эльбрус 2027": "https://sundita.by/tur/elbrus/",
+            "вдп": "https://sundita.by/tur/vdp/",
         }
 
     def test_parse_aliases_skips_garbage(self):
+        # Значения без http — защита от старого формата «имя=имя»: такое
+        # значение как URL брони опубликовало бы мусор.
         assert ts.parse_aliases("без равно; =;a=") == {}
+        assert ts.parse_aliases("Эльбрус 2027=Горнолыжный отдых на Эльбрусе") == {}
 
     def test_clean_display_name(self):
         assert ts.clean_display_name("Французский  поцелуй.docx") == "Французский поцелуй"
@@ -452,7 +457,7 @@ class TestTourNames:
 
     def test_alias_prevents_false_removal(self):
         base = "=== ТУР: Горнолыжный отдых на Эльбрусе ===\nСсылка на бронирование: " + BOOKING + "\n"
-        aliases = ts.parse_aliases("Эльбрус 2027=Горнолыжный отдых на Эльбрусе")
+        aliases = ts.parse_aliases("Эльбрус 2027=" + BOOKING)
         http = make_http(
             files=[{"id": "docE", "name": "Эльбрус 2027",
                     "mimeType": ts.GOOGLE_DOC_MIME, "modifiedTime": "m"}],
@@ -466,7 +471,7 @@ class TestTourNames:
 
     def test_seed_by_alias(self):
         base = "=== ТУР: Горнолыжный отдых на Эльбрусе ===\nСсылка на бронирование: " + BOOKING + "\n"
-        aliases = ts.parse_aliases("Эльбрус 2027=Горнолыжный отдых на Эльбрусе")
+        aliases = ts.parse_aliases("Эльбрус 2027=" + BOOKING)
         http = make_http(
             files=[{"id": "docE", "name": "Эльбрус 2027",
                     "mimeType": ts.GOOGLE_DOC_MIME, "modifiedTime": "m"}],
@@ -477,6 +482,44 @@ class TestTourNames:
         )
         assert info["status"] == "ok"
         assert BOOKING in snap["text"]
+
+    def test_direct_match_beats_alias(self):
+        """Прод-кейс 2026-10-04: seed из снапшота содержит имена из папки —
+        прямое совпадение обязано побеждать алиас на имя из базы."""
+        seed = "=== ТУР: Эльбрус 2027 ===\nСсылка на бронирование: " + BOOKING + "\n"
+        aliases = ts.parse_aliases("Эльбрус 2027=https://sundita.by/tur/wrong/")
+        http = make_http(
+            files=[{"id": "docE", "name": "Эльбрус 2027",
+                    "mimeType": ts.GOOGLE_DOC_MIME, "modifiedTime": "m"}],
+            exports={"docE": DOC_TEXT},
+        )
+        snap, info = ts.sync_now(
+            http, FOLDER, {"api_key": KEY}, None, seed, aliases, today=TODAY
+        )
+        assert info["status"] == "ok"
+        assert BOOKING in snap["text"]
+        assert "wrong" not in snap["text"]
+
+    def test_listed_but_skipped_suffix(self):
+        """В папке есть, но пропущен (нет брони): суффикс честный, не 'нет в папке'."""
+        base = (
+            "=== ТУР: Тур Ок ===\nСсылка на бронирование: " + BOOKING + "\n\n"
+            "=== ТУР: Тур Пропавший ===\nБез брони тут.\n"
+        )
+        ok_text = DOC_TEXT.replace("Тур Тестовый", "Тур Ок")
+        bad_text = DOC_TEXT.replace("Тур Тестовый", "Тур Пропавший")
+        http = make_http(
+            files=[
+                {"id": "docO", "name": "Тур Ок",
+                 "mimeType": ts.GOOGLE_DOC_MIME, "modifiedTime": "m"},
+                {"id": "docG", "name": "Тур Пропавший",
+                 "mimeType": ts.GOOGLE_DOC_MIME, "modifiedTime": "m"},
+            ],
+            exports={"docO": ok_text, "docG": bad_text},
+        )
+        snap, info = ts.sync_now(http, FOLDER, {"api_key": KEY}, None, base, today=TODAY)
+        assert info["status"] == "ok"
+        assert info["diff"]["removed"] == ["Тур Пропавший (пропущен — см. ниже)"]
 
 
 # --- Загруженный .docx ---------------------------------------------------------
@@ -539,6 +582,22 @@ class TestUploadedDocx:
         snap, info = ts.sync_now(http_get, FOLDER, {"api_key": KEY}, prev, today=TODAY)
         assert info["status"] in ("ok", "unchanged")
         assert "Виза: НУЖНА, но мы оказываем визовую поддержку" in snap["text"]
+
+
+class TestKeepSnapshot:
+    """Неуспешный тик возвращает None — им нельзя затирать последний хороший."""
+
+    def test_none_keeps_current(self):
+        current = {"hash": "abc"}
+        assert ts.keep_snapshot(current, None) is current
+
+    def test_new_replaces(self):
+        current = {"hash": "abc"}
+        new = {"hash": "def"}
+        assert ts.keep_snapshot(current, new) is new
+
+    def test_none_stays_none(self):
+        assert ts.keep_snapshot(None, None) is None
 
 
 # --- tour_loader: publish + snapshot -----------------------------------------

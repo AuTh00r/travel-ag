@@ -100,14 +100,17 @@ async def lifespan(app: FastAPI):
         except Exception:
             logger.exception("tours.load_failed")
             app.state.tours_text = ""
-        finally:
-            _tours_initial_loaded.set()
         # Поверх локальной базы — свежая версия из Drive, если настроено.
         # В отдельном потоке и так, сеть старту бота не тормозит.
+        # Событие — СТРОГО ПОСЛЕ начальной синхронизации: воркер, стартовавший
+        # раньше, увидел бы отсутствие снапшота и посчитал бы это первым
+        # запуском (прод-кейс 2026-10-04).
         try:
             _initial_tour_sync()
         except Exception:
             logger.exception("tour_sync.initial_failed")
+        finally:
+            _tours_initial_loaded.set()
 
     threading.Thread(target=_load_faq, daemon=True).start()
     threading.Thread(target=_load_tours, daemon=True).start()
@@ -981,7 +984,10 @@ async def _tour_sync_worker():
         await asyncio.sleep(settings.tour_sync_interval_seconds)
         try:
             # Сетевые вызовы — в потоке, чтобы не стопать event loop.
-            snapshot, info = await asyncio.to_thread(
+            # Неуспешный тик возвращает None вместо снапшота — им нельзя
+            # затирать последний хороший (прод-кейс 2026-10-04: один сбойный
+            # тик обнулил состояние, следующий потерял брони и выкинул 2 тура).
+            new_snapshot, info = await asyncio.to_thread(
                 ts.sync_now,
                 httpx.get,
                 settings.tour_sync_folder_id,
@@ -995,6 +1001,7 @@ async def _tour_sync_worker():
                 settings.tour_sync_min_tours,
                 settings.tour_sync_max_drop_ratio,
             )
+            snapshot = ts.keep_snapshot(snapshot, new_snapshot)
         except Exception:
             logger.exception("tour_sync.tick_failed")
             continue

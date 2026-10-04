@@ -166,15 +166,33 @@ def normalize_tour_name(name: str) -> str:
 
 
 def parse_aliases(raw: str) -> dict[str, str]:
-    """'A=B;C=D' -> {canon(A): canon(B)}. Связка имён из папки с базой."""
+    """'Имя в папке=https://...бронь;...' -> {canon(имя): URL брони}.
+
+    Алиас указывает сразу на URL (а не на имя тура в базе): seed для подхвата
+    может быть собран из снапшота (имена из папки), а не из DOCX-базы, и тогда
+    привязка к имени базы отравляет прямое совпадение — прод-кейс 2026-10-04:
+    «Эльбрус 2027» перестал матчиться после первой публикации и два тура
+    выпали из базы. Значения без http-начала игнорируем (защита от старого
+    формата «имя=имя»).
+    """
     aliases: dict[str, str] = {}
     for part in (raw or "").split(";"):
         if "=" not in part:
             continue
         left, right = part.split("=", 1)
-        if left.strip() and right.strip():
-            aliases[normalize_tour_name(left)] = normalize_tour_name(right)
+        if left.strip() and right.strip().startswith("http"):
+            aliases[normalize_tour_name(left)] = right.strip()
     return aliases
+
+
+def keep_snapshot(current: dict | None, new: dict | None) -> dict | None:
+    """Какой снапшот держать в памяти воркера.
+
+    Неуспешный тик возвращает None — им нельзя затирать последний хороший:
+    иначе следующий тик потеряет carried-ссылки и сырые тексты, а за ними
+    из базы выпадут туры (прод-кейс 2026-10-04).
+    """
+    return current if new is None else new
 
 
 def clean_display_name(name: str) -> str:
@@ -480,17 +498,18 @@ def sync_now(
     seed_norm = {normalize_tour_name(k): v for k, v in seed.items()}
     aliases = aliases or {}
     # Подхват брони по названию — только для документов, которых не было
-    # в прошлом состоянии (bootstrap при первом запуске). Имена сравниваем
-    # в канонической форме: регистр, расширение, пробелы и тире у начальства
-    # гуляют («Французский  поцелуй.docx»), а явные расхождения
-    # («Эльбрус 2027» vs «Горнолыжный отдых на Эльбрусе») закрываем алиасами.
+    # в прошлом состоянии (bootstrap при первом запуске). Порядок строгий:
+    # сначала прямое совпадение с seed, и только потом алиас. Алиас обязан
+    # идти вторым: seed может быть собран из снапшота (имена из папки), тогда
+    # алиас на имя из базы уводит мимо прямого попадания (прод-кейс 2026-10-04).
     for doc_id, doc in raws.items():
         if doc_id in carried:
             continue
         key = normalize_tour_name(doc["name"])
-        target = aliases.get(key, key)
-        if target in seed_norm:
-            carried[doc_id] = seed_norm[target]
+        if key in seed_norm:
+            carried[doc_id] = seed_norm[key]
+        elif key in aliases:
+            carried[doc_id] = aliases[key]
 
     try:
         snapshot, skipped = build_snapshot(raws, carried, today=today)
@@ -501,19 +520,27 @@ def sync_now(
 
     # Первый запуск (снапшота ещё нет): сравниваем с текущей базой из seed —
     # иначе исчезновение туров, которых нет в папке, прошло бы молча.
-    # Сопоставление алиас-чувствительное: «Эльбрус 2027» из папки — это
-    # «Горнолыжный отдых на Эльбрусе» из базы, а не удаление + добавление.
+    # Связка — по имени ИЛИ по ссылке на бронирование: «Эльбрус 2027» из папки
+    # и «Горнолыжный отдых на Эльбрусе» из базы — один тур, если бронь сошлась.
+    # Суффикс — только по факту: «нет в папке» — если документа нет в листинге,
+    # иначе это пропуск со своей причиной ниже (а не исчезновение).
     base_names: list[str] = []
     if prev is None and carried_seed_text:
         base_names = parse_tour_headers(carried_seed_text)
     if base_names:
-        new_mapped = {
-            aliases.get(normalize_tour_name(t["name"]), normalize_tour_name(t["name"]))
-            for t in snapshot["tours"]
-        }
-        missing = [
-            n for n in base_names if normalize_tour_name(n) not in new_mapped
-        ]
+        seed_map = {normalize_tour_name(k): v for k, v in seed.items()}
+        listed = {normalize_tour_name(doc["name"]) for doc in docs}
+        new_names = {normalize_tour_name(t["name"]) for t in snapshot["tours"]}
+        new_bookings = {t["booking_url"] for t in snapshot["tours"]}
+        missing = []
+        for name in base_names:
+            key = normalize_tour_name(name)
+            if key in new_names or seed_map.get(key) in new_bookings:
+                continue
+            if key in listed:
+                missing.append(f"{name} (пропущен — см. ниже)")
+            else:
+                missing.append(f"{name} (нет в папке)")
     else:
         missing = []
 
@@ -529,7 +556,7 @@ def sync_now(
     diff = diff_snapshots(prev, snapshot)
     for gone in missing:
         if gone not in diff["removed"]:
-            diff["removed"].append(f"{gone} (нет в папке)")
+            diff["removed"].append(gone)
     logger.info(
         "tour_sync.built",
         tours=len(snapshot["tours"]),
