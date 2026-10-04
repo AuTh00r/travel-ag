@@ -209,14 +209,20 @@ class TestPromptRules:
             head = state.split("—")[0].split(",")[0].strip()
             assert head in prompt, head
 
-    def test_dates_are_precomputed_not_left_to_model(self):
+    def test_dates_hidden_by_default_shown_on_request(self):
         prompt = self._system()
         assert "ДАТЫ УЖЕ ОТФИЛЬТРОВАНЫ" in prompt
         assert "Свободных дат нет" in prompt
+        # Даты не называем по умолчанию, только по явной просьбе клиента.
+        assert "по умолчанию НЕ называй" in prompt
+        assert "актуальные даты смотрите по ссылке на тур" in prompt
+        assert "Только если клиент явно попросил даты" in prompt
         # Старое правило требовало от модели самой сравнивать даты и
         # перечислять ВСЕ заезды — теперь это делает загрузчик.
         assert "ФИЛЬТР ДАТ" not in prompt
         assert "ВСЕ будущие даты" not in prompt
+        # Старого поведения «даты всегда» быть не должно.
+        assert "указывай даты из поля" not in prompt
 
     def test_male_gender_consistent(self):
         """«Пол — мужской» противоречил примеру «я передала… она свяжется»."""
@@ -225,10 +231,13 @@ class TestPromptRules:
         assert "передала" not in prompt
         assert "она свяжется" not in prompt
 
-    def test_paris_embassy_deadline_is_explicit_date(self):
-        """«на следующей неделе» устаревало каждую неделю."""
+    def test_no_stale_promos_in_prompt(self):
+        """Протухшие акции не должны жить в промпте: дедлайн посольства
+        02.10.2026 прошёл, повышение цен с 01.10 — тоже, актуальные данные
+        только в турах по ссылкам."""
         prompt = self._system()
-        assert "02.10.2026" in prompt
+        assert "02.10.2026" not in prompt
+        assert "посольство" not in prompt.lower()
         assert "на следующей неделе" not in prompt
 
 

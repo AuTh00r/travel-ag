@@ -21,7 +21,7 @@ TSK-006 (deploy+прод) — после всех
 | TSK-006 | completed | deploy 89dd4c5: 247 тестов на сервере, health 200, `tours.ready chars=19656` (DOCX), `tour_sync.disabled` — ждёт доступ |
 | TSK-007 | completed | SA-авторизация (приоритет над ключом), скачивание обоих типов файлов, нормализация имён, алиасы, чистка заголовков, сверка первого запуска с базой; dry-run против живого Drive |
 | TSK-008 | completed | Ключ SA в `credentials/` + `.env` на сервере; deploy 98ab647; первый живой тик ок (6 туров, TG ушло) |
-| TSK-009 | completed | Фикс инцидента 15:56 UTC: алиас→URL, keep_snapshot, событие после sync; 270 тестов; dry-run чистый |
+| TSK-009 | completed | Фикс инцидента 15:56 UTC: алиас→URL, keep_snapshot, событие после sync; 270 тестов; dry-run чистый; deploy 9b03a8c7 — тик 16:44 UTC вернул 6 туров (added=2, removed=0, skipped=0), TG ушло, снапшот ок |
 
 ## Tasks
 
