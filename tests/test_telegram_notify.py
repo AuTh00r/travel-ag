@@ -101,6 +101,43 @@ async def test_notify_manager_success():
 
 
 @pytest.mark.asyncio
+async def test_notify_manager_includes_extra_chat():
+    """Дополнительный чат (TELEGRAM_EXTRA_CHAT_ID) тоже получает уведомления."""
+    mock_response = AsyncMock()
+    mock_response.status_code = 200
+
+    mock_client = AsyncMock()
+    mock_client.__aenter__.return_value = mock_client
+    mock_client.post.return_value = mock_response
+
+    with (
+        patch("src.services.telegram_notify.AsyncClient", return_value=mock_client),
+        patch(
+            "src.services.telegram_notify.settings.telegram_manager_chat_id", "111"
+        ),
+        patch(
+            "src.services.telegram_notify.settings.telegram_secondary_chat_id", ""
+        ),
+        patch(
+            "src.services.telegram_notify.settings.telegram_tertiary_chat_id", ""
+        ),
+        patch(
+            "src.services.telegram_notify.settings.telegram_extra_chat_id",
+            "828032935",
+        ),
+    ):
+        notifier = TelegramNotifier()
+        await notifier.notify_manager(sender_id="123", context="тест")
+
+    assert mock_client.post.await_count == 2
+    chat_ids = [
+        call.kwargs["json"]["chat_id"]
+        for call in mock_client.post.await_args_list
+    ]
+    assert chat_ids == ["111", "828032935"]
+
+
+@pytest.mark.asyncio
 async def test_notify_manager_api_error():
     mock_response = AsyncMock()
     mock_response.status_code = 400

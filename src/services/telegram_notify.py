@@ -69,6 +69,7 @@ class TelegramNotifier:
                 settings.telegram_manager_chat_id,
                 settings.telegram_secondary_chat_id,
                 settings.telegram_tertiary_chat_id,
+                settings.telegram_extra_chat_id,
             ]
             if cid
         ]
