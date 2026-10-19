@@ -352,6 +352,16 @@ def _key_lines(section: str, prefix: str) -> str:
     return ""
 
 
+def _short_text(text: str, limit: int = 120) -> str:
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _field_value(section: str, prefix: str) -> str:
+    line = _key_lines(section, prefix)
+    return line.partition(":")[2].strip()
+
+
 def diff_snapshots(old: dict | None, new: dict) -> dict:
     """Что изменилось между сборками (по ID документов)."""
     old_tours = {t["doc_id"]: t for t in (old or {}).get("tours", [])}
@@ -379,34 +389,63 @@ def diff_snapshots(old: dict | None, new: dict) -> dict:
             continue
         notes: list[str] = []
         if t["name"] != old_tours[doc_id].get("name"):
-            notes.append(f"переименован: {old_tours[doc_id].get('name')} -> {t['name']}")
+            notes.append(f"переименован: {_short_text(old_tours[doc_id].get('name', ''))} → {_short_text(t['name'])}")
         for prefix, label in (
             ("Сколько стоит:", "цена"),
             ("Когда (", "даты"),
             ("Ссылка на тур:", "ссылка на тур"),
             ("Ссылка на бронирование:", "ссылка на бронь"),
         ):
-            a, b = _key_lines(old_sec, prefix), _key_lines(new_sec, prefix)
+            a, b = _field_value(old_sec, prefix), _field_value(new_sec, prefix)
             if a != b:
-                notes.append(f"{label}: {a or '—'} -> {b or '—'}")
-        changed.append(f"{t['name']} ({'; '.join(notes) if notes else 'текст'})")
+                if label == "даты":
+                    before = [v.strip() for v in a.split(";") if v.strip()]
+                    after = [v.strip() for v in b.split(";") if v.strip()]
+                    added_dates = [v for v in after if v not in before]
+                    removed_dates = [v for v in before if v not in after]
+                    if added_dates:
+                        notes.append("даты +: " + _short_text("; ".join(added_dates)))
+                    if removed_dates:
+                        notes.append("даты −: " + _short_text("; ".join(removed_dates)))
+                    if not added_dates and not removed_dates:
+                        notes.append("даты: изменён порядок")
+                elif label.startswith("ссылка"):
+                    action = "обновлена" if a and b else ("добавлена" if b else "удалена")
+                    notes.append(f"{label}: {action}")
+                else:
+                    notes.append(f"{label}: {_short_text(a) or '—'} → {_short_text(b) or '—'}")
+        changed.append(
+            _short_text(t["name"]) + "\n  " + "\n  ".join(notes or ["обновлено описание"])
+        )
     return {"added": added, "removed": removed, "changed": changed}
 
 
 def format_diff_message(diff: dict, skipped: list[str]) -> str:
-    """Короткое русское уведомление для Telegram."""
-    lines = ["🔄 Обновление туров (Google Drive):"]
-    if diff["added"]:
-        lines.append("➕ Добавлены: " + "; ".join(diff["added"]))
-    if diff["removed"]:
-        lines.append("➖ Удалены: " + "; ".join(diff["removed"]))
-    for c in diff["changed"]:
-        lines.append("✏️ " + c)
-    for s in skipped:
-        lines.append("⚠️ Пропущен (проверьте документ): " + s)
-    if len(lines) == 1:
-        lines.append("изменений состава нет")
-    return "\n".join(lines)
+    """Сводка и отдельные блоки туров, с запасом до лимита Telegram."""
+    groups = [
+        ("➕", "Добавлены", diff.get("added", [])),
+        ("➖", "Удалены", diff.get("removed", [])),
+        ("✏️", "Изменены", diff.get("changed", [])),
+        ("⚠️", "Пропущены — проверьте документы", skipped),
+    ]
+    summary = " · ".join(f"{label.split(' —')[0]}: {len(items)}" for _, label, items in groups if items)
+    text = "🔄 Обновление туров · Google Docs\n" + (summary or "Изменений нет")
+    # Ошибки показываем первыми, чтобы они не терялись при большом обновлении.
+    entries = [
+        f"{icon} " + "\n".join(
+            line if i else _short_text(line, 180)
+            for i, line in enumerate(str(item).splitlines())
+        )
+        for icon, _, items in [groups[3], *groups[:3]]
+        for item in items
+    ]
+    for index, entry in enumerate(entries):
+        entry = entry if len(entry) <= 650 else entry[:649] + "…"
+        if len((text + "\n\n" + entry).encode("utf-16-le")) // 2 > 3400:
+            text += f"\n\n… Ещё пунктов: {len(entries) - index}. Подробности — в Google Drive."
+            break
+        text += "\n\n" + entry
+    return text
 
 
 def _resolve_auth(auth):

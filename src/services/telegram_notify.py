@@ -9,6 +9,7 @@ from src.exceptions import TelegramError
 logger = get_logger()
 
 TELEGRAM_API_URL = "https://api.telegram.org/bot{token}/sendMessage"
+TEST_INSTAGRAM_HANDLES = frozenset({"shelter_0", "unknovvnoname"})
 
 
 
@@ -23,6 +24,9 @@ def _build_notification_text(
     client_email: str | None = None,
     tag: str = "Нужен звонок",
 ) -> str:
+    if sender_id == "tour_sync":
+        return context
+
     now = datetime.now(MINSK_TZ).strftime("%d.%m.%Y %H:%M")
 
     lines = [
@@ -31,8 +35,11 @@ def _build_notification_text(
     ]
 
     if instagram_handle:
+        instagram_handle = instagram_handle.strip().lstrip("@")
         link = f"https://www.instagram.com/{instagram_handle}/"
         lines.append(f"\U0001f464 Клиент: @{instagram_handle}")
+        if instagram_handle.casefold() in TEST_INSTAGRAM_HANDLES:
+            lines.append("🧪 Тестовый аккаунт")
         lines.append(f"\U0001f517 {link}")
     else:
         lines.append(f"\U0001f464 Клиент: {sender_id}")
@@ -89,6 +96,7 @@ class TelegramNotifier:
                 json={
                     "chat_id": chat_id,
                     "text": text,
+                    **({"link_preview_options": {"is_disabled": True}} if sender_id == "tour_sync" else {}),
                 },
             )
         if response.status_code != 200:

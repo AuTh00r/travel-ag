@@ -22,6 +22,28 @@ def test_build_notification_with_handle():
     assert "Иван" in text
 
 
+def test_tour_sync_has_no_client_escalation_wrapper():
+    message = "🔄 Обновление туров · Google Docs\nИзменены: 1\n✏️ Париж"
+    assert _build_notification_text(
+        sender_id="tour_sync", context=message, tag="Tour sync"
+    ) == message
+
+
+@pytest.mark.parametrize(
+    "handle", ["shelter_0", "unknovvnoname", "@SHELTER_0", " @Unknovvnoname "]
+)
+def test_test_account_label(handle):
+    text = _build_notification_text(sender_id="123", instagram_handle=handle)
+    assert "🧪 Тестовый аккаунт" in text
+    assert "@@" not in text
+
+
+@pytest.mark.parametrize("handle", [None, "ivan_petrov", "shelter_01", "unknovvnoname_other"])
+def test_regular_account_has_no_test_label(handle):
+    text = _build_notification_text(sender_id="123", instagram_handle=handle)
+    assert "Тестовый аккаунт" not in text
+
+
 def test_build_notification_no_contacts():
     text = _build_notification_text(
         sender_id="123",

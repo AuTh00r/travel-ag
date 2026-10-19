@@ -271,8 +271,50 @@ class TestDiff:
         diff = ts.diff_snapshots(old, snap_with(["A", "B"]))
         assert diff == {"added": [], "removed": [], "changed": []}
 
+    def test_compact_field_changes(self):
+        old = self._snap([("d1", "Париж")])
+        old["tours"][0]["section"] += (
+            "\nКогда (ближайшие свободные даты): 01.12.2027; 15.12.2027"
+            "\nСсылка на бронирование: https://example.com/old"
+        )
+        new = self._snap([("d1", "Париж")])
+        new["text"] = (
+            "=== ТУР: Париж ===\nСколько стоит: 200 €"
+            "\nКогда (ближайшие свободные даты): 15.12.2027; 25.12.2027"
+            "\nСсылка на бронирование: https://example.com/new"
+        )
+        message = ts.format_diff_message(ts.diff_snapshots(old, new), [])
+        assert "цена: 100 € → 200 €" in message
+        assert "даты +: 25.12.2027" in message
+        assert "даты −: 01.12.2027" in message
+        assert "15.12.2027" not in message
+        assert "Сколько стоит:" not in message
+        assert "ссылка на бронь: обновлена" in message
+        assert "https://example.com" not in message
+
+    def test_description_only_change(self):
+        old = self._snap([("d1", "Париж")])
+        new = self._snap([("d1", "Париж")])
+        new["text"] += "\nНовая программа"
+        message = ts.format_diff_message(ts.diff_snapshots(old, new), [])
+        assert "обновлено описание" in message
+
 
 class TestFormatMessage:
+    def test_large_update_keeps_summary_and_warnings(self):
+        msg = ts.format_diff_message(
+            {"added": ["Тур 🚌 " + "А" * 200] * 100, "removed": [], "changed": []},
+            ["Париж (нет ссылки на бронирование)"],
+        )
+        assert "Добавлены: 100" in msg
+        assert "Пропущены: 1" in msg
+        assert "Париж (нет ссылки на бронирование)" in msg
+        assert "Ещё пунктов:" in msg
+        assert len(msg.encode("utf-16-le")) // 2 < 4096
+
+    def test_empty_diff(self):
+        assert "Изменений нет" in ts.format_diff_message({}, [])
+
     def test_contains_markers(self):
         msg = ts.format_diff_message(
             {"added": ["X"], "removed": ["Y"], "changed": ["Z (цена)"]},
