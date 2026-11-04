@@ -1,4 +1,7 @@
 from datetime import timedelta, timezone
+from typing import Literal
+
+from pydantic import model_validator
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -15,6 +18,17 @@ class Settings(BaseSettings):
     # DeepSeek API
     deepseek_api_key: str = ""
     deepseek_model: str = "deepseek-chat"
+    deepseek_vision_model: str = "deepseek-flash"
+    story_media_enabled: bool = False
+    image_media_enabled: bool = False
+    shared_media_enabled: bool = False
+    ads_media_enabled: bool = False
+    instagram_ads_account_id: str = ""
+    instagram_ads_account_ids: str = ""  # Дополнительные явно разрешённые кабинеты, CSV.
+    instagram_ads_token_file: str = ""  # Отдельный приватный файл; не PAGE messaging token.
+    voice_media_enabled: bool = False
+    voice_python_executable: str = ""
+    voice_model_dir: str = ""
 
     # Instagram (Meta Graph API)
     instagram_app_secret: str = ""
@@ -64,10 +78,33 @@ class Settings(BaseSettings):
     # 720 = 30 дней.
     escalation_reset_hours: int = 720
 
+    # One bounded verification call for a proposed consultation, before any send.
+    manager_review_enabled: bool = True
+    manager_review_timeout_seconds: float = 25
+
     # Очередь недоставленных сообщений (pending_messages)
     default_retry_seconds: int = 60
     max_retry_attempts: int = 5
     pending_worker_interval_seconds: int = 30
+
+    # Durable inbound recovery. Separate API switch; both are off for rollout.
+    inbound_recovery_enabled: bool = False
+    inbound_recovery_scope: Literal["allowlist", "all"] = "allowlist"
+    inbound_recovery_client_ids: str = ""
+    # Independent model transport canary; empty means installed JSON for everyone.
+    deepseek_tool_client_ids: str = ""
+    deepseek_tool_scope: Literal['allowlist', 'all'] = 'allowlist'
+    instagram_reconcile_enabled: bool = False
+    inbound_watchdog_seconds: int = 60
+    inbound_retry_first_seconds: int = 120
+    inbound_retry_second_seconds: int = 480
+    inbound_semantic_recheck_seconds: int = 120
+    inbound_lease_seconds: int = 180
+    inbound_heartbeat_seconds: int = 15
+    instagram_reconcile_interval_seconds: int = 120
+    instagram_reconcile_timeout_seconds: int = 15
+    instagram_reconcile_deadline_seconds: int = 90
+    instagram_reconcile_max_requests: int = 100
 
     # Проактивный мониторинг Instagram usage
     instagram_usage_warn_pct: int = 85
@@ -110,8 +147,38 @@ class Settings(BaseSettings):
 
     # Настройки сервера
     log_level: str = "INFO"
+    deepseek_response_log_enabled: bool = True
     host: str = "0.0.0.0"
     port: int = 8000
+
+    def recovery_allows(self, client_id: str) -> bool:
+        if self.inbound_recovery_scope == "all":
+            return True
+        return str(client_id) in self.recovery_clients()
+
+    def recovery_clients(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(part.strip() for part in self.inbound_recovery_client_ids.split(",") if part.strip()))
+
+    @model_validator(mode="after")
+    def validate_tool_scope(self):
+        if self.deepseek_tool_client_ids.strip():
+            parts = self.deepseek_tool_client_ids.split(',')
+            if any(not part.strip().isascii() or not part.strip().isdigit()
+                   or len(part.strip()) > 128 or int(part.strip()) == 0 for part in parts):
+                raise ValueError('Tool canary requires numeric Instagram client IDs')
+        return self
+
+    def tool_clients(self) -> tuple[str, ...]:
+        return tuple(dict.fromkeys(part.strip() for part in self.deepseek_tool_client_ids.split(',') if part.strip()))
+
+    @model_validator(mode="after")
+    def validate_recovery_scope(self):
+        if self.inbound_recovery_enabled and self.inbound_recovery_scope == "allowlist":
+            parts = self.inbound_recovery_client_ids.split(",")
+            if not parts or any(not part.strip().isascii() or not part.strip().isdigit()
+                                or len(part.strip()) > 128 for part in parts):
+                raise ValueError("Enabled recovery allowlist requires numeric Instagram client IDs")
+        return self
 
 
 settings = Settings()

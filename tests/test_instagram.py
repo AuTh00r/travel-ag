@@ -1,3 +1,4 @@
+from tests.model_responses import tool_response
 from unittest.mock import AsyncMock, Mock, patch
 
 import httpx
@@ -8,6 +9,14 @@ from src.config import settings
 from src.main import app
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def immediate_batch_for_dispatch_tests(monkeypatch):
+    # Здесь проверяется dispatcher; реальный таймер и отдельные POST — test_inbound_batch.
+    import src.main as main
+    monkeypatch.setattr(main, "_wait_inbound_window", AsyncMock())
+    monkeypatch.setattr(main, "_inbound_locks", {})
 
 
 class TestWebhookVerification:
@@ -762,7 +771,9 @@ class TestNonTextParser:
                 }]
             }]
         }
-        assert await channel.receive_message(payload) == []
+        events = await channel.receive_message(payload)
+        assert events == [{"kind": "story_context", "sender_id": "CLIENT_42",
+                           "mid": "mid_story_reaction_1", "text": "", "story": {"id": None}}]
 
     @pytest.mark.asyncio
     async def test_story_reply_with_meaningful_text_stays_user(self):
@@ -791,6 +802,7 @@ class TestNonTextParser:
             "sender_id": "CLIENT_42",
             "text": "🔥 Сколько стоит?",
             "mid": "mid_story_text_1",
+            "story": {"id": None},
         }]
 
     @pytest.mark.asyncio
@@ -863,21 +875,14 @@ class TestNonTextParser:
             }]
         }
         events = await channel.receive_message(payload)
-        assert events == [{
-            "kind": "user",
-            "sender_id": "CLIENT_42",
-            "text": "Визы нет. Пришлите варианты туров.",
-            "mid": "mid_ad_1",
-            "referral": {
-                "source": "ADS",
-                "type": "OPEN_THREAD",
-                "ad_id": "AD_123",
-                "ad_title": "Туры с визовой поддержкой",
-            },
-        }]
+        assert len(events) == 1
+        assert events[0]['kind'] == 'user' and events[0]['_ad_text_only']
+        assert events[0]['text'] == 'Визы нет. Пришлите варианты туров.'
+        assert events[0]['sender_id'] == 'CLIENT_42' and events[0]['mid'] == 'mid_ad_1'
+        assert 'referral' not in events[0]
 
     @pytest.mark.asyncio
-    async def test_referral_without_text_is_logged_only(self):
+    async def test_ad_referral_without_text_is_ignored(self):
         from src.channels.instagram import InstagramChannel
 
         channel = InstagramChannel()
@@ -894,7 +899,12 @@ class TestNonTextParser:
                 }]
             }]
         }
-        assert await channel.receive_message(payload) == []
+        events = await channel.receive_message(payload)
+        assert len(events) == 1
+        assert events[0]["kind"] == "ignored"
+        assert events[0]["_ad_text_only"]
+        assert "referral" not in events[0]
+        assert events[0]["text"] == ""
 
     @pytest.mark.asyncio
     async def test_plain_text_stays_user(self):
@@ -1009,8 +1019,8 @@ class TestNonTextParser:
         assert "user" in kinds
 
     @pytest.mark.asyncio
-    async def test_no_merge_without_non_text(self):
-        """Два user-события без non_text не мержатся."""
+    async def test_plain_messages_in_batch_keep_order_and_all_mids(self):
+        """Обычный текст текущего пакета объединяется без потери порядка."""
         from src.channels.instagram import InstagramChannel
 
         channel = InstagramChannel()
@@ -1035,8 +1045,9 @@ class TestNonTextParser:
             }]
         }
         events = await channel.receive_message(payload)
-        assert len(events) == 2
-        assert all(ev["kind"] == "user" for ev in events)
+        assert len(events) == 1 and events[0]["kind"] == "user"
+        assert events[0]["text"] == "первое\nвторое"
+        assert {events[0]["mid"], *events[0]["related_mids"]} == {"mid_1", "mid_2"}
 
     @pytest.mark.asyncio
     async def test_non_text_echo_manager(self):
@@ -1063,6 +1074,133 @@ class TestNonTextParser:
         assert events[0]["kind"] == "manager"
         assert events[0]["client_id"] == "CLIENT_42"
         assert events[0]["text"] == ""
+
+
+class TestStoryReplyDiagnostics:
+    @pytest.mark.parametrize("text", ["Какие даты?", "❤️", ""])
+    @pytest.mark.asyncio
+    async def test_story_context_logged_without_text_or_url(self, text):
+        from structlog.testing import capture_logs
+
+        from src.channels.instagram import InstagramChannel
+
+        message = {
+            "mid": "diagnostic_mid",
+            "text": text,
+            "reply_to": {
+                "story": {
+                    "id": "18130692049755620",
+                    "url": "https://example.com/video.mp4?secret=DO_NOT_LOG",
+                }
+            },
+        }
+        payload = {"entry": [{"messaging": [{
+            "sender": {"id": "CLIENT_42"}, "message": message,
+        }]}]}
+        with capture_logs() as logs:
+            events = await InstagramChannel().receive_message(payload)
+        diagnostic = [
+            entry for entry in logs if entry["event"] == "instagram.story_reply.context"
+        ]
+        assert diagnostic == [{
+            "event": "instagram.story_reply.context",
+            "log_level": "info",
+            "mid": "diagnostic_mid",
+            "story_id": "18130692049755620",
+            "story_id_present": True,
+            "story_id_valid": True,
+            "has_story_url": True,
+        }]
+        assert "DO_NOT_LOG" not in str(logs)
+        if text == "❤️":
+            assert events == [{"kind": "story_context", "sender_id": "CLIENT_42",
+                               "mid": "diagnostic_mid", "text": "",
+                               "story": {"id": "18130692049755620"}}]
+        elif text:
+            assert events == [{
+                "kind": "user", "sender_id": "CLIENT_42",
+                "text": text, "mid": "diagnostic_mid",
+                "story": {"id": "18130692049755620"},
+            }]
+        else:
+            assert events[0]["kind"] == "user_non_text"
+
+    @pytest.mark.parametrize("story_id,valid", [
+        ("123", True), ("1" * 32, True), ("1" * 33, False),
+        ("１２３", False), ("secret\nhttps://example.com/token", False),
+        (None, False), (123, False), ({"token": "SECRET_ID"}, False),
+    ])
+    @pytest.mark.asyncio
+    async def test_invalid_story_id_is_not_logged_raw(self, story_id, valid):
+        from structlog.testing import capture_logs
+
+        from src.channels.instagram import InstagramChannel
+
+        payload = {"entry": [{"messaging": [{
+            "sender": {"id": "CLIENT_42"},
+            "message": {
+                "mid": "diagnostic_mid", "text": "Какие даты?",
+                "reply_to": {"story": {"id": story_id, "url": None}},
+            },
+        }]}]}
+        with capture_logs() as logs:
+            events = await InstagramChannel().receive_message(payload)
+        diagnostic = next(
+            entry for entry in logs if entry["event"] == "instagram.story_reply.context"
+        )
+        assert diagnostic["story_id"] == (story_id if valid else None)
+        assert diagnostic["story_id_present"] is True
+        assert diagnostic["story_id_valid"] is valid
+        assert diagnostic["has_story_url"] is False
+        assert "SECRET_ID" not in str(logs)
+        assert "https://example.com/token" not in str(logs)
+        assert events[0]["kind"] == "user"
+
+    @pytest.mark.parametrize("url,has_url", [
+        (None, False), ("", False), ("   ", False), (123, False),
+        ({"token": "URL_SECRET"}, False),
+        ("https://example.com/secret", True),
+    ])
+    @pytest.mark.asyncio
+    async def test_missing_story_id_and_url_types(self, url, has_url):
+        from structlog.testing import capture_logs
+
+        from src.channels.instagram import InstagramChannel
+
+        payload = {"entry": [{"messaging": [{
+            "sender": {"id": "CLIENT_42"},
+            "message": {
+                "mid": "diagnostic_mid", "text": "Какие даты?",
+                "reply_to": {"story": {"url": url}},
+            },
+        }]}]}
+        with capture_logs() as logs:
+            await InstagramChannel().receive_message(payload)
+        diagnostic = next(
+            entry for entry in logs if entry["event"] == "instagram.story_reply.context"
+        )
+        assert diagnostic["story_id"] is None
+        assert diagnostic["story_id_present"] is False
+        assert diagnostic["story_id_valid"] is False
+        assert diagnostic["has_story_url"] is has_url
+        assert "URL_SECRET" not in str(logs)
+        assert "https://example.com/secret" not in str(logs)
+
+    @pytest.mark.asyncio
+    async def test_plain_message_does_not_log_story_context(self):
+        from structlog.testing import capture_logs
+
+        from src.channels.instagram import InstagramChannel
+
+        payload = {"entry": [{"messaging": [{
+            "sender": {"id": "CLIENT_42"},
+            "message": {"mid": "plain_mid", "text": "Привет"},
+        }]}]}
+        with capture_logs() as logs:
+            await InstagramChannel().receive_message(payload)
+        assert not any(
+            entry["event"] == "instagram.story_reply.context" for entry in logs
+        )
 
 
 class TestNonTextWebhook:
@@ -1234,10 +1372,7 @@ class TestNonTextWebhook:
         }
         response = client.post("/webhook/instagram", json=payload)
         assert response.status_code == 200
-        mock_ai_process.assert_awaited_once_with(
-            "CLIENT_AD",
-            "Визы нет. Пришлите варианты туров.",
-        )
+        mock_ai_process.assert_awaited_once_with('CLIENT_AD', 'Визы нет. Пришлите варианты туров.')
         mock_non_text_process.assert_not_awaited()
 
     @patch("src.main._process_non_text_safely")
@@ -1465,13 +1600,7 @@ class TestEchoClassification:
 class TestNonTextProcessing:
     """_process_non_text_safely — эскалация non-text сообщений."""
 
-    def setup_method(self):
-        from src.main import _in_ai_processing
-
-        _in_ai_processing.clear()
-
     @pytest.mark.asyncio
-    @patch("asyncio.sleep", return_value=None)
     @patch("src.services.telegram_notify.TelegramNotifier")
     @patch("src.main.instagram.send_message")
     @patch("src.main.instagram.get_username")
@@ -1486,7 +1615,6 @@ class TestNonTextProcessing:
         mock_get_username,
         mock_send,
         mock_notifier_cls,
-        mock_sleep,
     ):
         from src.main import _process_non_text_safely
 
@@ -1517,7 +1645,6 @@ class TestNonTextProcessing:
         assert saved_session["escalation_count"] == 1
 
     @pytest.mark.asyncio
-    @patch("asyncio.sleep", return_value=None)
     @patch("src.services.telegram_notify.TelegramNotifier")
     @patch("src.main.instagram.send_message")
     @patch("src.main.instagram.get_username")
@@ -1532,7 +1659,6 @@ class TestNonTextProcessing:
         mock_get_username,
         mock_send,
         mock_notifier_cls,
-        mock_sleep,
     ):
         """Регрессия прод-кейса 2026-09-26: немаркированный ack про вложение
         попадал в историю «голосом» ассистента, и на следующий день LLM
@@ -1564,7 +1690,6 @@ class TestNonTextProcessing:
         assert "Служебное сообщение о вложении" in assistant_entries[-1]["content"]
 
     @pytest.mark.asyncio
-    @patch("asyncio.sleep", return_value=None)
     @patch("src.services.telegram_notify.TelegramNotifier")
     @patch("src.main.instagram.send_message")
     @patch("src.main.instagram.get_username")
@@ -1579,7 +1704,6 @@ class TestNonTextProcessing:
         mock_get_username,
         mock_send,
         mock_notifier_cls,
-        mock_sleep,
     ):
         from src.main import _process_non_text_safely
 
@@ -1599,44 +1723,10 @@ class TestNonTextProcessing:
         # Telegram НЕ вызван
         mock_notifier.notify_manager.assert_not_awaited()
 
-        # Клиент получил "запрос уже передан"
+        # Клиенту явно сообщается, что нового уведомления не было.
         ack_text = mock_send.await_args[0][1]
-        assert "уже передан" in ack_text
-
-    @pytest.mark.asyncio
-    @patch("asyncio.sleep", return_value=None)
-    @patch("src.services.telegram_notify.TelegramNotifier")
-    @patch("src.main.instagram.send_message")
-    @patch("src.main.get_session")
-    async def test_non_text_ack_skipped_when_ai_pending(
-        self,
-        mock_get_session,
-        mock_send,
-        mock_notifier_cls,
-        mock_sleep,
-    ):
-        from unittest.mock import AsyncMock
-
-        from src.main import _in_ai_processing, _process_non_text_safely
-
-        import time as _time
-
-        # Метка в единицах monotonic (как пишет прод-код): now - marker ~= 0 < TTL.
-        # Хардкод 999999.0 здесь нельзя — на машине с аптаймом > ~11.6 суток
-        # now - 999999 > TTL и тест ложно падает (только на прод-сервере).
-        _in_ai_processing["CLIENT_42"] = _time.monotonic()  # не истекло
-        mock_get_session.return_value = {"history": [], "escalation_count": 0}
-        mock_notifier_cls.return_value = AsyncMock()
-
-        await _process_non_text_safely(
-            "CLIENT_42",
-            "",
-            {"types": ["image"], "summary": "вложение: image"},
-        )
-
-        # Auto-ack не отправлен — AI обработка активна
-        mock_send.assert_not_awaited()
-        _in_ai_processing.clear()
+        assert "Новое уведомление менеджеру не отправлено" in ack_text
+        assert "лимит" in ack_text and "уже передан" not in ack_text
 
     @pytest.mark.asyncio
     @patch("src.main.instagram.send_message")
@@ -1670,13 +1760,7 @@ class TestNonTextProcessing:
 class TestSharedPostProcessing:
     """Отложенная обработка публикации Instagram без подписи."""
 
-    def setup_method(self):
-        from src.main import _in_ai_processing
-
-        _in_ai_processing.clear()
-
     @pytest.mark.asyncio
-    @patch("asyncio.sleep", return_value=None)
     @patch("src.services.telegram_notify.TelegramNotifier")
     @patch("src.main.instagram.send_message")
     @patch("src.main.instagram.get_username")
@@ -1691,16 +1775,12 @@ class TestSharedPostProcessing:
         mock_get_username,
         mock_send,
         mock_notifier_cls,
-        mock_sleep,
     ):
         from src.main import (
             _SHARED_POST_CLARIFICATION,
-            _in_ai_processing,
             _process_shared_post_safely,
         )
 
-        # Старая AI-обработка не должна скрывать новую публикацию.
-        _in_ai_processing["CLIENT_SHARED_ONLY"] = 99.0
         session = {"history": [], "escalation_count": 0}
         mock_is_active.return_value = False
         mock_get_session.return_value = session
@@ -1709,9 +1789,8 @@ class TestSharedPostProcessing:
         mock_notifier = AsyncMock()
         mock_notifier_cls.return_value = mock_notifier
 
-        await _process_shared_post_safely("CLIENT_SHARED_ONLY", received_at=100.0)
+        await _process_shared_post_safely("CLIENT_SHARED_ONLY")
 
-        mock_sleep.assert_awaited_once_with(5)
         mock_notifier.notify_manager.assert_awaited_once()
         mock_send.assert_awaited_once_with(
             "CLIENT_SHARED_ONLY",
@@ -1728,28 +1807,6 @@ class TestSharedPostProcessing:
         )
         assert mock_save.await_count == 2
 
-    @pytest.mark.asyncio
-    @patch("asyncio.sleep", return_value=None)
-    @patch("src.services.telegram_notify.TelegramNotifier")
-    @patch("src.main.instagram.send_message")
-    @patch("src.main.get_session")
-    async def test_shared_post_is_silent_when_later_text_started_ai(
-        self,
-        mock_get_session,
-        mock_send,
-        mock_notifier_cls,
-        mock_sleep,
-    ):
-        from src.main import _in_ai_processing, _process_shared_post_safely
-
-        _in_ai_processing["CLIENT_SHARED_PAIRED"] = 101.0
-
-        await _process_shared_post_safely("CLIENT_SHARED_PAIRED", received_at=100.0)
-
-        mock_sleep.assert_awaited_once_with(5)
-        mock_get_session.assert_not_awaited()
-        mock_send.assert_not_awaited()
-        mock_notifier_cls.assert_not_called()
 
 
 class TestMessageLostLogging:
@@ -1764,7 +1821,7 @@ class TestMessageLostLogging:
     @pytest.mark.asyncio
     @patch("src.channels.instagram.InstagramChannel.send_message")
     @patch("src.main.process_with_ai")
-    async def test_process_safely_logs_lost_on_rate_limit(self, mock_process, mock_send):
+    async def test_process_safely_never_sends_technical_fallback_on_rate_limit(self, mock_process, mock_send):
         from structlog.testing import capture_logs
 
         from src.exceptions import InstagramRateLimitError
@@ -1779,15 +1836,15 @@ class TestMessageLostLogging:
             await _process_safely("CLIENT_LOST_1", "привет")
 
         lost = [e for e in logs if e.get("event") == "instagram.message.lost"]
-        assert len(lost) == 1
-        assert lost[0]["reason"] == "rate_limited"
-        assert lost[0]["error_code"] == 80002
-        assert lost[0]["retry_after_seconds"] == 42.0
+        assert lost == []
+        mock_send.assert_not_awaited()
+        failure = [e for e in logs if e.get('event') == 'ai.processing.failed']
+        assert len(failure) == 1 and failure[0]['error_type'] == 'Exception'
 
     @pytest.mark.asyncio
     @patch("src.channels.instagram.InstagramChannel.send_message")
     @patch("src.main.process_with_ai")
-    async def test_process_safely_logs_lost_on_other_error(self, mock_process, mock_send):
+    async def test_process_safely_never_sends_technical_fallback_on_other_error(self, mock_process, mock_send):
         from structlog.testing import capture_logs
 
         from src.main import _process_safely
@@ -1799,8 +1856,9 @@ class TestMessageLostLogging:
             await _process_safely("CLIENT_LOST_2", "привет")
 
         lost = [e for e in logs if e.get("event") == "instagram.message.lost"]
-        assert len(lost) == 1
-        assert lost[0]["reason"] == "other"
+        assert lost == []
+        mock_send.assert_not_awaited()
+        assert any(e.get('event') == 'ai.processing.failed' for e in logs)
 
     @pytest.mark.asyncio
     @patch("src.channels.instagram.InstagramChannel.get_username", new=AsyncMock(return_value="test_user"))
@@ -1816,7 +1874,6 @@ class TestMessageLostLogging:
         mock_llm,
         mock_tours,
     ):
-        from types import SimpleNamespace
 
         from structlog.testing import capture_logs
 
@@ -1825,7 +1882,7 @@ class TestMessageLostLogging:
 
         mock_get_session.return_value = {"history": [], "escalation_count": 0}
         mock_llm.return_value.ainvoke = AsyncMock(
-            return_value=SimpleNamespace(content="Привет! Вот варианты туров.")
+            return_value=tool_response(arguments='{"reply":"Привет! Вот варианты туров.","manager":null}')
         )
         mock_send.side_effect = InstagramRateLimitError(
             "limited", error_code=4, retry_after_seconds=5.0

@@ -38,6 +38,8 @@ Thumbs.db
 # Ruff / pytest
 .ruff_cache/
 .pytest_cache/
+# Generated test sandboxes; archived separately during migration cleanup.
+/.tmp-*/
 
 # Temp / dev files
 bot*.log
@@ -56,3 +58,17 @@ tours/_analysis.json
 
 # Exported conversation logs
 context.md
+
+# Local environment variants; only the public template belongs in Git
+.env.*
+!.env.example
+/.venv-*/
+/.claude/settings.local.json
+
+# Runtime database formats and sidecars under data only
+/data/*.db
+/data/*.db-*
+/data/*.sqlite
+/data/*.sqlite-*
+/data/*.sqlite3
+/data/*.sqlite3-*

@@ -9,6 +9,11 @@ class ConfigError(TravelBotError):
 class InstagramError(TravelBotError):
     """Ошибка взаимодействия с Instagram API."""
 
+    def __init__(self, message, *, delivery_status="blocked", retry_after_seconds=None):
+        super().__init__(message)
+        self.delivery_status = delivery_status
+        self.retry_after_seconds = retry_after_seconds
+
 
 class InstagramRateLimitError(InstagramError):
     """Meta сигнализирует rate-limit (код 4/17/32/613/80002 внутри тела ответа).
@@ -39,5 +44,27 @@ class LLMError(TravelBotError):
     """Ошибка взаимодействия с LLM API."""
 
 
+class ProviderResponseError(LLMError):
+    """Invalid provider envelope, without retaining its content."""
+
+    def __init__(self, reason: str, response: object) -> None:
+        self.reason = reason
+        self.response_type = type(response).__name__[:64]
+        super().__init__(reason)
+
+
+class StoryMediaError(TravelBotError):
+    """Безопасный код ошибки медиа, без URL, токена или ответа провайдера."""
+
+
 class TelegramError(TravelBotError):
     """Ошибка взаимодействия с Telegram Bot API."""
+
+    def __init__(self, message, *, delivery_status="unknown", retry_after_seconds=None):
+        super().__init__(message)
+        self.delivery_status = delivery_status
+        self.retry_after_seconds = retry_after_seconds
+
+
+class VoiceMediaError(TravelBotError):
+    """Безопасный код ошибки голосового, без ссылки или текста клиента."""

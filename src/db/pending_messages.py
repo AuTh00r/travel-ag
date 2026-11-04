@@ -25,6 +25,9 @@ def _get_connection() -> sqlite3.Connection:
             attempts INTEGER NOT NULL DEFAULT 0
         )
         """)
+    if "recovery_delivery_id" not in {row[1] for row in conn.execute("PRAGMA table_info(pending_messages)")}:
+        conn.execute("ALTER TABLE pending_messages ADD COLUMN recovery_delivery_id TEXT")
+        conn.commit()
     # Индекс на retry_at здесь НЕ создаётся намеренно. Проверено на 5000 строк
     # (EXPLAIN QUERY PLAN): из-за `ORDER BY id` в get_due_pending планировщик
     # всё равно выбирает SCAN — идти по индексу retry_at, а потом сортировать по
@@ -37,6 +40,11 @@ def _get_connection() -> sqlite3.Connection:
 
 
 async def enqueue_pending(recipient_id: str, text: str, retry_at: str) -> int:
+    from src.services.inbound_recovery import current_processing
+    context = current_processing.get()
+    if context is not None and context.client_id == recipient_id:
+        context.plan_reply(text)
+        return 0  # Deferred draft, never visible to the legacy outbound worker.
     conn = _get_connection()
     cur = conn.execute(
         """INSERT INTO pending_messages (recipient_id, text, created_at, retry_at)
@@ -47,13 +55,15 @@ async def enqueue_pending(recipient_id: str, text: str, retry_at: str) -> int:
     row_id = cur.lastrowid
     conn.close()
     logger.debug("pending.enqueued", id=row_id, recipient_id=recipient_id)
+    from src.services.diagnostic_trace import trace_event
+    trace_event('pending_enqueued', sender_id=recipient_id, pending_id=row_id, text=text, retry_at=retry_at)
     return row_id
 
 
 async def get_due_pending(now_iso: str) -> list[dict]:
     conn = _get_connection()
     rows = conn.execute(
-        """SELECT id, recipient_id, text, retry_at, attempts
+        """SELECT id, recipient_id, text, retry_at, attempts, recovery_delivery_id
            FROM pending_messages
            WHERE retry_at <= ?
            ORDER BY id""",

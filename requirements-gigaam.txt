@@ -1,0 +1,5 @@
+# Install only in the isolated GigaAM environment, never the bot environment.
+onnx-asr==0.12.0
+onnxruntime==1.23.2
+numpy==2.2.6
+av==16.1.0

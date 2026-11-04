@@ -24,18 +24,57 @@ def _get_connection() -> sqlite3.Connection:
     # WAL: в режиме journal (по умолчанию) писатель блокирует читателей. Свойство
     # пишется в сам файл БД один раз и сохраняется, повторный вызов безвреден.
     conn.execute("PRAGMA journal_mode=WAL")
+    ensure_schema(conn)
+    return conn
+
+
+def ensure_schema(conn):
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             client_id TEXT PRIMARY KEY,
             state TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            revision INTEGER NOT NULL DEFAULT 0
         )
         """)
-    return conn
+    if "revision" not in {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}:
+        conn.execute("ALTER TABLE sessions ADD COLUMN revision INTEGER NOT NULL DEFAULT 0")
+    conn.commit()
+
+
+def read_row(conn, client_id):
+    row = conn.execute("SELECT state,revision FROM sessions WHERE client_id=?", (client_id,)).fetchone()
+    return (json.loads(row[0]), row[1]) if row else (_new_session(client_id), 0)
+
+
+def write_row(conn, client_id, state, expected_revision=None):
+    """UPSERT preserves created_at and monotonically increments revision."""
+    history = state.get("history")
+    limit = settings.max_history_messages
+    if isinstance(history, list) and limit > 0 and len(history) > limit*2:
+        state = {**state, "history": history[-limit*2:]}
+    if expected_revision is not None:
+        row = conn.execute("SELECT revision FROM sessions WHERE client_id=?", (client_id,)).fetchone()
+        if (row[0] if row else 0) != expected_revision:
+            return False
+    if state.get('manager_last_at'):
+        previous, _ = read_row(conn, client_id)
+        if state['manager_last_at'] != previous.get('manager_last_at') and conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='manager_tasks'").fetchone():
+            from src.db.manager_tasks import close_client
+            close_client(conn, client_id)
+    conn.execute("INSERT INTO sessions(client_id,state,revision,updated_at) VALUES (?,?,1,CURRENT_TIMESTAMP) "
+                 "ON CONFLICT(client_id) DO UPDATE SET state=excluded.state,revision=sessions.revision+1,"
+                 "updated_at=CURRENT_TIMESTAMP", (client_id, json.dumps(state, default=str)))
+    return True
 
 
 async def get_session(client_id: str) -> dict:
+    from src.services.inbound_recovery import current_processing
+    context = current_processing.get()
+    if context is not None and context.client_id == client_id:
+        return context.get_session()
     conn = _get_connection()
     row = conn.execute(
         "SELECT state FROM sessions WHERE client_id = ?", (client_id,)
@@ -58,6 +97,11 @@ def _new_session(client_id: str) -> dict:
 
 
 async def save_session(client_id: str, state: dict) -> None:
+    from src.services.inbound_recovery import current_processing
+    context = current_processing.get()
+    if context is not None and context.client_id == client_id:
+        context.save_session(state)
+        return
     # Обрезаем здесь, в единственной точке записи: историю наращивают шесть
     # разных мест в main.py, и полагаться на то, что каждое помнит про лимит,
     # не стоит. Сохраняем с запасом относительно того, что уходит в LLM, —
@@ -69,11 +113,7 @@ async def save_session(client_id: str, state: dict) -> None:
             state = {**state, "history": history[-limit * 2:]}
 
     conn = _get_connection()
-    conn.execute(
-        """INSERT OR REPLACE INTO sessions (client_id, state, updated_at)
-           VALUES (?, ?, CURRENT_TIMESTAMP)""",
-        (client_id, json.dumps(state, default=str)),
-    )
+    write_row(conn, client_id, state)
     conn.commit()
     conn.close()
     logger.debug("session.saved", client_id=client_id)

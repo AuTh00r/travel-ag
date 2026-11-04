@@ -66,16 +66,16 @@ def _parse_faq_file(filepath: Path) -> list[dict]:
 
 
 def load_faq_to_chroma() -> int:
+    faq_dir = Path(FAQ_DIR)
+    if not any(faq_dir.glob("*.txt")):
+        logger.info("faq.disabled_no_sources")
+        return 0
+
     collection = get_collection()
 
     if collection.count() > 0:
         logger.info("faq.already_loaded", count=collection.count())
         return collection.count()
-
-    faq_dir = Path(FAQ_DIR)
-    if not faq_dir.exists():
-        logger.warning("faq.directory_not_found", path=str(faq_dir))
-        return 0
 
     all_entries: list[dict] = []
     for filepath in sorted(faq_dir.glob("*.txt")):
@@ -118,6 +118,10 @@ def load_faq_to_chroma() -> int:
 
 
 async def search_faq(query: str, n_results: int = 3) -> list[dict]:
+    # Retired source files must also disable any stale persisted index.
+    if not any(Path(FAQ_DIR).glob("*.txt")):
+        return []
+
     loop = asyncio.get_event_loop()
     collection = get_collection()
 

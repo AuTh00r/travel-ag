@@ -1,5 +1,6 @@
+from tests.model_responses import tool_response
+from tests.model_responses import reply_json
 from datetime import datetime, timezone
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -93,7 +94,7 @@ class TestPartialChunkDelivery:
         assert len(expected_chunks) >= 2, "нужен ответ минимум из 2 chunks для теста"
 
         mock_llm.return_value.ainvoke = AsyncMock(
-            return_value=SimpleNamespace(content=long_text)
+            return_value=tool_response(arguments=reply_json(long_text))
         )
         # Первый chunk уходит успешно, второй (и далее) — падает с rate-limit.
         mock_send.side_effect = [None] + [
@@ -133,7 +134,7 @@ class TestPartialChunkDelivery:
         from src.main import process_with_ai
 
         mock_llm.return_value.ainvoke = AsyncMock(
-            return_value=SimpleNamespace(content="Привет! Вот варианты туров.")
+            return_value=tool_response(arguments=reply_json("Привет! Вот варианты туров."))
         )
 
         sender_id = "CLIENT_PARTIAL_2"

@@ -37,7 +37,10 @@ def test_extract_tour_section_puts_url_first():
     assert lines[0] == "=== ТУР: Тестовый_тур ==="
     assert lines[1] == "Ссылка на тур: https://docs.google.com/document/d/abc123"
     assert "Маршрут:" in lines[2]
-    assert "Виза:" in lines[6]
+    visa_index = next(i for i, line in enumerate(lines) if line.startswith("Виза:"))
+    date_index = next(i for i, line in enumerate(lines) if line.startswith("Свободных дат нет"))
+    assert 2 < visa_index < date_index
+    assert "Даты: 10.07.2026 - 20.07.2026" not in result
     assert "Подробное описание" in "\n".join(lines)
     assert "ПОДРОБНАЯ ИНФОРМАЦИЯ" not in result
 
@@ -47,6 +50,15 @@ def test_extract_tour_section_no_url():
     result = _extract_tour_section("Без_ссылки", paragraphs)
     assert "Ссылка на тур" not in result
     assert "=== ТУР: Без_ссылки ===" in result
+
+
+@pytest.mark.parametrize('marker', ['Для туристов с визами', 'ДЛЯ ТУРИСТОВ С ВИЗАМИ',
+                                   'Тур для туристов с визами.', 'Для туристов\nс визами'])
+def test_program_visa_marker_is_preserved_for_the_prompt(marker):
+    marked = _extract_tour_section('С готовой визой', ['Описание', marker])
+    unmarked = _extract_tour_section('С оформлением', ['Другая программа.'])
+    assert 'для туристов с визами' in ' '.join(marked.casefold().split())
+    assert 'для туристов с визами' not in unmarked.casefold()
 
 
 def test_extract_tour_section_key_fields_after_url():

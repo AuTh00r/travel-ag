@@ -171,11 +171,19 @@ class TestBuildSnapshot:
         assert skipped == []
         assert snap["tours"][0]["booking_url"] == "https://sundita.by/tur/from-doc/"
 
-    def test_skipped_without_booking(self):
+    def test_included_without_booking(self):
         raws = {"doc9": {"name": "Тур Новый", "modified": "m1", "text": DOC_TEXT}}
         snap, skipped = ts.build_snapshot(raws, {}, today=TODAY)
-        assert len(snap["tours"]) == 0
-        assert skipped == ["Тур Новый (нет ссылки на бронирование)"]
+        assert len(snap["tours"]) == 1
+        assert skipped == []
+        assert snap["tours"][0]["booking_url"] == ""
+        assert "Ссылка на бронирование" not in snap["text"]
+        assert "Ссылка на тур: https://docs.google.com/document/d/doc9" in snap["text"]
+
+    def test_empty_document_is_not_a_tour(self):
+        snap, skipped = ts.build_snapshot({"doc9": {"name": "Пустой", "text": " \n"}}, {}, today=TODAY)
+        assert snap["tours"] == []
+        assert skipped == ["Пустой (пустой документ)"]
 
     def test_duplicate_names_rejected(self):
         raws = {
@@ -271,8 +279,50 @@ class TestDiff:
         diff = ts.diff_snapshots(old, snap_with(["A", "B"]))
         assert diff == {"added": [], "removed": [], "changed": []}
 
+    def test_compact_field_changes(self):
+        old = self._snap([("d1", "Париж")])
+        old["tours"][0]["section"] += (
+            "\nКогда (ближайшие свободные даты): 01.12.2027; 15.12.2027"
+            "\nСсылка на бронирование: https://example.com/old"
+        )
+        new = self._snap([("d1", "Париж")])
+        new["text"] = (
+            "=== ТУР: Париж ===\nСколько стоит: 200 €"
+            "\nКогда (ближайшие свободные даты): 15.12.2027; 25.12.2027"
+            "\nСсылка на бронирование: https://example.com/new"
+        )
+        message = ts.format_diff_message(ts.diff_snapshots(old, new), [])
+        assert "цена: 100 € → 200 €" in message
+        assert "даты +: 25.12.2027" in message
+        assert "даты −: 01.12.2027" in message
+        assert "15.12.2027" not in message
+        assert "Сколько стоит:" not in message
+        assert "ссылка на бронь: обновлена" in message
+        assert "https://example.com" not in message
+
+    def test_description_only_change(self):
+        old = self._snap([("d1", "Париж")])
+        new = self._snap([("d1", "Париж")])
+        new["text"] += "\nНовая программа"
+        message = ts.format_diff_message(ts.diff_snapshots(old, new), [])
+        assert "обновлено описание" in message
+
 
 class TestFormatMessage:
+    def test_large_update_keeps_summary_and_warnings(self):
+        msg = ts.format_diff_message(
+            {"added": ["Тур 🚌 " + "А" * 200] * 100, "removed": [], "changed": []},
+            ["Париж (нет ссылки на бронирование)"],
+        )
+        assert "Добавлены: 100" in msg
+        assert "Пропущены: 1" in msg
+        assert "Париж (нет ссылки на бронирование)" in msg
+        assert "Ещё пунктов:" in msg
+        assert len(msg.encode("utf-16-le")) // 2 < 4096
+
+    def test_empty_diff(self):
+        assert "Изменений нет" in ts.format_diff_message({}, [])
+
     def test_contains_markers(self):
         msg = ts.format_diff_message(
             {"added": ["X"], "removed": ["Y"], "changed": ["Z (цена)"]},
@@ -302,13 +352,14 @@ class TestSyncNow:
         assert snap["hash"] == prev["hash"]
         assert http.calls["exports"] == [], "неизменившееся не качаем заново"
 
-    def test_empty_without_bookings_invalid(self):
+    def test_new_tour_without_booking_is_published(self):
         http = make_http(files=[doc_entry()], exports={"doc1": DOC_TEXT})
         snap, info = ts.sync_now(http, FOLDER, {"api_key": KEY}, None, today=TODAY,
                                  carried_seed_text="",
                                  )
-        # без брони в carried и seed — пропуск, результат пуст -> invalid
-        assert info["status"] == "invalid"
+        assert info["status"] == "ok"
+        assert snap["tours"][0]["booking_url"] == ""
+        assert info["skipped"] == []
 
     def test_ok_with_seed(self):
         base = "=== ТУР: Тур Тестовый ===\nСсылка на бронирование: " + BOOKING + "\n"
@@ -501,13 +552,12 @@ class TestTourNames:
         assert "wrong" not in snap["text"]
 
     def test_listed_but_skipped_suffix(self):
-        """В папке есть, но пропущен (нет брони): суффикс честный, не 'нет в папке'."""
+        """В папке есть, но не скачался: суффикс честный, не 'нет в папке'."""
         base = (
             "=== ТУР: Тур Ок ===\nСсылка на бронирование: " + BOOKING + "\n\n"
             "=== ТУР: Тур Пропавший ===\nБез брони тут.\n"
         )
         ok_text = DOC_TEXT.replace("Тур Тестовый", "Тур Ок")
-        bad_text = DOC_TEXT.replace("Тур Тестовый", "Тур Пропавший")
         http = make_http(
             files=[
                 {"id": "docO", "name": "Тур Ок",
@@ -515,9 +565,14 @@ class TestTourNames:
                 {"id": "docG", "name": "Тур Пропавший",
                  "mimeType": ts.GOOGLE_DOC_MIME, "modifiedTime": "m"},
             ],
-            exports={"docO": ok_text, "docG": bad_text},
+            exports={"docO": ok_text},
         )
-        snap, info = ts.sync_now(http, FOLDER, {"api_key": KEY}, None, base, today=TODAY)
+        def fail_missing(url, **kwargs):
+            if "/docG/" in url:
+                raise httpx.ConnectError("download failed")
+            return http(url, **kwargs)
+
+        snap, info = ts.sync_now(fail_missing, FOLDER, {"api_key": KEY}, None, base, today=TODAY)
         assert info["status"] == "ok"
         assert info["diff"]["removed"] == ["Тур Пропавший (пропущен — см. ниже)"]
 
@@ -556,9 +611,9 @@ class TestUploadedDocx:
         snap, info = ts.sync_now(
             http_get, FOLDER, {"api_key": KEY}, None, "", today=TODAY,
         )
-        # брони нет нигде — пропуск, но скачивание и разбор прошли без ошибок
-        assert info["status"] == "invalid"
-        assert snap is None
+        assert info["status"] == "ok"
+        assert snap["tours"][0]["booking_url"] == ""
+        assert "Куда: Минск - Париж" in snap["text"]
 
     def test_docx_with_carried_booking(self):
         blob = make_docx_bytes(DOC_TEXT.split("\n"))

@@ -1,5 +1,68 @@
 # Design: синхронизация туров из Google Drive
 
+## Micro 2026-11-02: даты
+
+Сохранить общий _extract_tour_section. Нормализовать только подпись даты,
+пробелы и разделитель; строгий разбор всей записи, а не поиск даты в описании.
+Учитывать отдельно распознанные, доступные и неизвестные записи. Неизвестная
+запись не подтверждает распродажу. Строка «Даты требуют уточнения» сопровождает
+частичные даты или заменяет ложное закрытие; metadata available=null при
+полностью неизвестных датах, true при подтверждённых будущих, false только
+при полностью проверенном отсутствии. Нового формата данных не добавляется.
+
+## Micro 2026-11-01: варианты подписи бронирования
+
+Shared case-insensitive labelled-URL recognition in tour_loader accepts explicit
+booking labels and site/tour/link variants. _booking_url_match gives explicit
+booking priority within the whole tour; programme Docs/Drive URLs are excluded.
+Use the helper for section rendering, snapshot.booking_url and bootstrap grouped
+by tour header. Legacy aggregated DOCX boundaries remain explicit-only; generic
+references cannot manufacture new tours. Cached raw is reparsed by build_snapshot,
+so no source-cache invalidation is necessary for the two missing booking fields.
+Current8tour snapshot rebuilt offline:6 ->8booking URLs, previous6unchanged.
+No changes to date/visa/footer rules, network calls or production snapshot.
+
+## Микроправка 2026-10-29: визовая пометка
+
+Действующие8программ не содержат прежнего поля «Виза:». Три тура помечены
+«для туристов с визами»; текст проходит через существующий loader в каталог.
+У остальных пометки нет; владелец подтвердил помощь с оформлением при
+необходимости визы. Меняется только общий _BASE_RULES в prompts.py, который
+уже входит в primary JSON/tools и review_business_rules. Условия применяются
+к конкретному туру, без переноса пометки из соседнего раздела или старой истории.
+Поддержка не приравнивается к безвизовости; явная безвизовая программа сохраняется.
+Это заменяет прежнюю инструкцию модели о трёх обязательных значениях «Виза:»;
+legacy-нормализация документов, синхронизация, снапшот и outbox не меняются.
+
+## Поправка 2026-10-26
+
+В build_snapshot отсутствующая бронь представлена пустой строкой; секция тура
+собирается прежним loader без выдуманного URL. Ссылки из документа/старого состояния
+сохраняют прежний приоритет. Промпт допускает отсутствие поля брони; справочные
+вопросы отвечаются из каталога, оформление без ссылки передаётся менеджеру.
+При начальном отказе/исключении Drive _initial_tour_sync публикует prev в память,
+не перезаписывая его и не отправляя уведомления об изменениях. При unchanged
+воркер восстанавливает память только при расхождении и не повторяет уведомления.
+Проверка enabled выполняется до сетевого тика. Тесты внешние отправки и модель
+подменяют заглушками. Автозапуск инфраструктуры проверен read-only и сохраняется.
+
+## Интеграция компактных уведомлений 2026-10-19
+
+Уточнение rollback: на серверном диске уже b0c04146, но работающий PID4136
+остаётся от18Oct17:07 UTC. Поэтому backup сохраняет точные текущие файлы,
+а fallback содержит отдельную последнюю проверенную1486 PASS версию четырёх
+целевых файлов из local-before. Откат возвращает её, не старую receipt-less
+версию после git pull. Новые receipts/unknown остаются в SQLite. Env и baseline
+защищены; новый installed manifest31 accurately включает четыре target-файла.
+
+Micro из requirements.md: перенести только четыре hunks нового commit в
+действующий TelegramNotifier; сохраняются сигнатура _send, recovery context,
+receipt/error handling и deferred notifications. Tour-sync formatting и его
+тесты обновляются из b0c04146; проверенные текущие TG-тесты дополняются, а не
+заменяются старой базой. Архитектурного выбора нет. Пакет содержит два source,
+два test и installed manifest. Baseline учитывает уже выполненный пользователем
+git pull и два известных несовпадения старого manifest; остальные SHA защищены.
+
 ## Overview
 
 In-process воркер в `lifespan` опрашивает Drive API, собирает базу через существующий разбор `tour_loader`, публикует в память только при изменении и пройденной валидации. Читатели (`process_with_ai` → `get_tours_text()`) не меняются.

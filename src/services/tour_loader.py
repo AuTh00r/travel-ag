@@ -13,7 +13,17 @@ _tours_text: str = ""
 _tours_folder: str = "tours"
 
 _URL_RE = re.compile(r"https?://docs\.google\.com\S+")
-_BOOKING_URL_RE = re.compile(r"Ссылка на бронирование\s*[-–—:]\s*(https?://\S+)")
+_BOOKING_LABEL = r"(?:ссылка\s+на\s+)?(?:бронирование|бронь)(?:\s+на\s+сайте)?"
+_SITE_LABEL = r"(?:ссылка(?:\s+на\s+(?:тур(?:\s+на\s+сайте)?|сайт(?:\s+тура)?))?|тур\s+на\s+сайте)"
+# Docs/Drive URLs identify the source programme, never its booking page.
+_BOOKING_ADDRESS = r"\s*[-–—:]?\s*(https?://(?!(?:www\.)?(?:docs|drive)\.google\.com(?=[:/?#\s]|$))[^\s<>\"']+)"
+_EXPLICIT_BOOKING_URL_RE = re.compile(r"(?<!\w)" + _BOOKING_LABEL + _BOOKING_ADDRESS, re.IGNORECASE)
+_BOOKING_URL_RE = re.compile(r"(?<!\w)(?:" + _BOOKING_LABEL + "|" + _SITE_LABEL + ")" + _BOOKING_ADDRESS, re.IGNORECASE)
+
+
+def _booking_url_match(text: str):
+    """An explicitly labelled booking link wins over a generic site link."""
+    return _EXPLICIT_BOOKING_URL_RE.search(text) or _BOOKING_URL_RE.search(text)
 _KEY_FIELDS = ("Маршрут:", "Даты:", "Стоимость:", "Тип отдыха:", "Виза:", "Куда:", "Когда:", "Сколько стоит:")
 
 # --- Визы -------------------------------------------------------------------
@@ -48,13 +58,23 @@ def _normalize_visa(value: str) -> str:
 # --- Даты заездов -----------------------------------------------------------
 #
 # Даты лежат россыпью: первая в строке «Когда: ...», остальные отдельными
-# строками ниже. Регулярка намеренно строгая (только DD.MM[.YYYY] - DD.MM.YYYY
-# на всю строку), иначе под неё попадают куски программы вида «10 день: ...» и
+# строками ниже. Регулярки проверяют всю запись (диапазон или дату с годом),
+# иначе под них попадают куски программы вида «10 день: ...» и
 # «10 ночлегов в отелях».
 _DATE_RANGE_RE = re.compile(
     r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?\s*[-–—]\s*"
     r"(\d{1,2})\.(\d{1,2})\.(\d{4})\s*"
     r"(?:\(\s*([^)]*?)\s*\))?\s*$"
+)
+_DATE_SINGLE_RE = re.compile(r"^(\d{1,2})\.(\d{1,2})\.(\d{4})\s*(?:\(\s*([^)]*?)\s*\))?\s*$")
+_DATE_LABEL_RE = re.compile(
+    r"^(?:дат[аы]\s+выезда|когда|даты)\b\s*(?:[:\-–—]\s*|(?=\d)|$)", re.IGNORECASE
+)
+_DATE_RECORD_RE = re.compile(r"^\d{1,2}\s*[./][\d\s./\-–—‐‑−;,]*(?:\([^)]*\))?\s*$")
+_TEXT_DATE_RE = re.compile(r"^\d{1,2}\s+[а-яё]+\s+\d{4}(?:\s*\([^)]*\))?$", re.IGNORECASE)
+_DATES_UNKNOWN = (
+    "Даты требуют уточнения: часть записей отсутствует или не распознана. "
+    "Это не означает отсутствие тура или свободных мест."
 )
 
 # Пометки, при которых дату нельзя предлагать клиенту.
@@ -62,12 +82,21 @@ _SOLD_OUT_MARKERS = ("мест нет", "нет мест", "продан", "за
 
 
 def _parse_date_range(line: str) -> tuple[date_type, str, str] | None:
-    """Разобрать строку с диапазоном дат.
+    """Разобрать диапазон или одиночную дату с явным годом.
 
     Возвращает (дата начала, текст без пометки, пометка в скобках) или None,
-    если строка не является диапазоном дат.
+    если строка не является корректной записью даты.
     """
-    m = _DATE_RANGE_RE.match(line.strip())
+    line = re.sub(r"\s*\.\s*", ".", line.strip()).translate(str.maketrans("‐‑−", "---"))
+    single = _DATE_SINGLE_RE.fullmatch(line)
+    if single:
+        day, month, year, note = single.groups()
+        try:
+            start = date_type(int(year), int(month), int(day))
+        except ValueError:
+            return None
+        return start, start.strftime("%d.%m.%Y"), (note or "").strip()
+    m = _DATE_RANGE_RE.match(line)
     if not m:
         return None
     d1, m1, y1, d2, m2, y2, note = m.groups()
@@ -80,7 +109,10 @@ def _parse_date_range(line: str) -> tuple[date_type, str, str] | None:
         start_year = end_year - 1 if int(m1) > int(m2) else end_year
     try:
         start = date_type(start_year, int(m1), int(d1))
+        end = date_type(end_year, int(m2), int(d2))
     except ValueError:
+        return None
+    if end < start:
         return None
     start_text = f"{int(d1):02d}.{int(m1):02d}.{start_year} - {int(d2):02d}.{int(m2):02d}.{end_year}"
     return start, start_text, (note or "").strip()
@@ -113,7 +145,7 @@ def _extract_tour_section(
     if tour_url:
         text = _URL_RE.sub("", text).strip()
 
-    booking_url_match = _BOOKING_URL_RE.search(text)
+    booking_url_match = _booking_url_match(text)
     booking_url = booking_url_match.group(1) if booking_url_match else ""
     if booking_url:
         text = _BOOKING_URL_RE.sub("", text).strip()
@@ -131,6 +163,10 @@ def _extract_tour_section(
     available: list[tuple[date_type, str]] = []
     dropped_past = 0
     dropped_sold_out = 0
+    unknown_dates = False
+    date_block = False
+    pending_heading = False
+    date_section_ended = False
 
     for line in text.split("\n"):
         line = line.strip()
@@ -139,13 +175,37 @@ def _extract_tour_section(
 
         visa_match = _VISA_LINE_RE.match(line)
         if visa_match:
+            unknown_dates |= pending_heading
+            pending_heading = False
+            date_section_ended |= date_block
+            date_block = False
             visa_line = f"Виза: {_normalize_visa(visa_match.group(1))}"
             continue
 
-        # «Когда: 15.01 - 24.01.2027» — первая дата живёт с префиксом.
-        candidate = line[len("Когда:"):].strip() if line.startswith("Когда:") else line
+        label = _DATE_LABEL_RE.match(line)
+        candidate = line[label.end():].strip() if label else line
+        if label:
+            unknown_dates |= pending_heading
+            pending_heading = False
+            date_block = True
+            date_section_ended = False
+            if not candidate:
+                pending_heading = True
+                continue
+        if not label and (date_section_ended or re.match(r"^программа\b", line, re.IGNORECASE)):
+            unknown_dates |= pending_heading
+            pending_heading = False
+            date_block = False
+            date_section_ended = True
+            other_lines.append(line)
+            continue
         parsed = _parse_date_range(candidate)
+        # New single-day support is limited to the departure field/block.
+        if parsed and " - " not in parsed[1] and not (label or date_block):
+            other_lines.append(line)
+            continue
         if parsed:
+            pending_heading = False
             start, date_text, note = parsed
             if _is_sold_out(note):
                 dropped_sold_out += 1
@@ -156,11 +216,21 @@ def _extract_tour_section(
                 available.append((start, date_text + suffix))
             continue
 
+        if label or _DATE_RECORD_RE.fullmatch(candidate) or (date_block and _TEXT_DATE_RE.fullmatch(candidate)):
+            unknown_dates = True
+            pending_heading = False
+            continue
+        unknown_dates |= pending_heading
+        pending_heading = False
+        date_section_ended |= date_block
+        date_block = False
+
         if any(line.startswith(f) for f in _KEY_FIELDS):
             key_lines.append(line)
         else:
             other_lines.append(line)
 
+    unknown_dates |= pending_heading
     available.sort(key=lambda item: item[0])
     limit = settings.max_tour_dates
     shown = available[:limit] if limit > 0 else available
@@ -182,11 +252,14 @@ def _extract_tour_section(
                 f"Есть ещё {hidden} {_plural_zaezd(hidden)} позже — "
                 "подробности по ссылке на тур или у менеджера."
             )
-    else:
+    elif not unknown_dates and (dropped_past or dropped_sold_out):
         parts.append(
             "Свободных дат нет: все заезды прошли или распроданы. "
             "Тур клиентам не предлагай — передай запрос менеджеру."
         )
+
+    if unknown_dates or not (available or dropped_past or dropped_sold_out):
+        parts.append(_DATES_UNKNOWN)
 
     if dropped_sold_out or dropped_past:
         logger.debug(
@@ -238,8 +311,9 @@ def _split_tours(paragraphs: list[str]) -> list[list[str]]:
     current: list[str] = []
     for p in paragraphs:
         current.append(p)
-        # Split on booking URL (preferred) — it's the last field per tour
-        if _BOOKING_URL_RE.search(p) and len(current) > 1:
+        # Preserve legacy document boundaries. Generic site links can occur
+        # within a programme and must not manufacture additional tours.
+        if _EXPLICIT_BOOKING_URL_RE.search(p) and len(current) > 1:
             blocks.append(current)
             current = []
     # Fallback: if no booking URLs found, split on Google Docs URL
