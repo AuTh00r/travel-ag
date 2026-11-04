@@ -1,98 +1,53 @@
-# Деплой на сервер
+# Выкладка на Windows-сервер
 
-## Быстрый деплой (после изменений)
+Подготовка релиза и его применение — разные действия. Deployment, рестарт, внешние сообщения и изменение рабочих данных требуют отдельного разрешения.
 
-```powershell
-.\deploy.ps1
-```
+## Сначала определить исходную версию
 
-Скрипт делает всё автоматически:
-1. Коммитит и пушит в `origin master`
-2. Проверяет SSH-доступ
-3. Пуллит код на сервере и устанавливает зависимости
-4. (Опционально) запускает тесты
-5. Перезапускает бота через планировщик задач
-6. Ждёт health check
+Последние выкладки выполнялись пакетами отдельных файлов поверх сверенного серверного состояния. GitHub, локальная папка и production могут различаться. Последний зафиксированный quiet-window release — 4 ноября 2026, 01:09 Europe/Minsk; N42 остался локальным: [README](../README.md), [quiet-window](../runtime/inbound-quiet-window.md), [N42](../runtime/provider-response-deadline.md).
 
-Параметры:
-```powershell
-.\deploy.ps1 -SkipTests          # без тестов
-.\deploy.ps1 -SkipPush           # без пуша (если уже запушили руками)
-.\deploy.ps1 -CommitMessage "fix" # свой коммит
-```
+Перед следующей выкладкой заново сверить manifest и реальные серверные хеши. Датированная запись не заменяет свежую проверку.
 
-## Вручную (пошагово)
+## Подготовка и проверка пакета
 
-```powershell
-# 1. Закоммитить и запушить
-git add -A
-git commit -m "краткое описание"
-git push origin master
+1. Прочитать спеку изменения и определить разрешённые файлы; отделить остальную локальную работу.
+2. Выполнить профильные проверки, полный offline pytest и Ruff по требованиям изменения.
+3. На чтение сверить серверные исходники, manifest, ограничения конфигурации и состояние процесса/очередей. Секреты в отчёт не выводить.
+4. Собрать пакет с точными именами, размерами и SHA-256 относительно проверенного сервера; не заменять его всей локальной папкой.
+5. Проверить backup и откат кода при полной и частичной установке. Откат кода не должен откатывать новые клиентские записи и подтверждения отправок в live SQLite.
+6. После отдельного разрешения выполнить штатную установку и рестарт.
+7. Проверить установленные хеши, процесс, local/public health, очереди, сохранность данных и новые ошибки; зафиксировать результат в спеке.
 
-# 2. Зайти на сервер, стянуть код и обновить зависимости
-ssh sundita-office
-chcp 65001
-cd C:\travel-agent-bot
-git pull origin master
-.venv\Scripts\pip install -r requirements.txt -q
-# или одной строкой:
-ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & git pull origin master & .venv\Scripts\pip install -r requirements.txt -q"
+Рабочие release-скрипты и частные отчёты могут находиться вне репозитория. Универсальная команда установки здесь не обещается.
 
-# 3. Запустить тесты
-ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & .venv\Scripts\python -m pytest tests -q"
+## Старый deploy.ps1
 
-# 4. Перезапустить бота
-ssh sundita-office "chcp 65001 >nul & schtasks /run /tn RestartTravelBot"
+`deploy.ps1` сохранён как Git-based инструмент: он автоматически делает `git add -A`, commit, push, серверный pull, установку зависимостей и рестарт. **Не запускать его как обычный шаг переноса или уборки.** При текущем расхождении версий он может отправить лишние локальные изменения или смешать Git-снимок с серверной работой.
 
-# 5. Проверить
-curl https://sundita.online/health
-# → {"status":"ok"}
-```
+Сначала отдельно согласовать Git и выбранный релиз, затем проверить применимость скрипта. Пропуск проверок не исправляет несоответствие версий.
 
-## Сброс сессий (если контекст засорён)
+## Диагностика без записи
+
+Production: Windows, `C:\travel-agent-bot`, SSH alias `sundita-office`. Настройка доступа — [SSH-руководство](SSH-REMOTE-ACCESS-SETUP.md).
+
+При уже настроенном доступе:
 
 ```powershell
-ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & del /q data\sessions.db"
-# Бот сам создаст новую БД при следующем запросе.
+ssh sundita-office "chcp 65001 >nul & curl --fail http://127.0.0.1:8000/health"
 ```
 
-## Сброс takeover (паузы бота) для конкретного клиента
+Публичный health:
 
-```powershell
-ssh sundita-office "chcp 65001 >nul & cd C:\travel-agent-bot & .venv\Scripts\python -c ^
-import sqlite3, json; conn = sqlite3.connect('data/sessions.db'); ^
-[conn.execute('UPDATE sessions SET state=? WHERE client_id=?', ^
- (json.dumps({**json.loads(s), 'manager_last_at': None}), cid)) ^
- for cid,s in conn.execute('SELECT client_id, state FROM sessions').fetchall()]; ^
-conn.commit(); conn.close(); print('Done')"
+```bash
+curl --fail https://sundita.online/health
 ```
 
-## Просмотр логов
+Health подтверждает доступность маршрута, а не исправность всех каналов, актуальность всех исходников или доставку конкретного ответа.
 
-```powershell
-# Через Chrome Remote Desktop — открыть лог-файл на сервере вручную.
-# Либо через SSH (для простых команд):
-ssh sundita-office "chcp 65001 >nul & type C:\travel-agent-bot\nohup.out 2>nul | tail -50"
-```
+## Данные и журналы
 
-## Проверка статуса
+Не удалять `data/sessions.db` и не делать массовый SQL-reset takeover ради диагностики или переноса. Это затрагивает историю, очереди и защиту от дублей. Исправление конкретной записи — отдельная операция с выбранной целью, backup и разрешением.
 
-```powershell
-# Health
-curl https://sundita.online/health
+Логи и диагностические ответы могут содержать данные клиентов. Читать ограниченно и редактировать чувствительные значения перед передачей.
 
-# Проверить, приходят ли вебхуки от Instagram
-curl https://sundita.online/webhook/instagram/last_seen
-# → {"received_ever":true,"last_received_at":"..."} — OK
-# → {"received_ever":false} — вебхуки не приходят
-```
-
-## Ссылки
-
-- **Домен**: `https://sundita.online`
-- **Webhook**: `https://sundita.online/webhook/instagram`
-- **Health**: `https://sundita.online/health`
-- **SSH**: `ssh sundita-office` (настройка в `~\.ssh\config`)
-- **Сервер**: Windows, проект `C:\travel-agent-bot`
-- **Репозиторий**: `https://github.com/AuTh00r/travel-ag.git`
-- **Деплой скрипт**: `deploy.ps1`
+Перенос среды разработки на Mac не меняет Windows-сервер, Cloudflare, Meta, расписания или рабочие БД. Повторный деплой для него не требуется.
